@@ -26,6 +26,17 @@ namespace PaifuViewer
         public List<Action> HandActions;   // 手牌の各牌を切る操作
         public Action DrawnAction;         // ツモ切り
         public Action<int> PickAction;     // ツモ候補から引く
+        public List<CallOption> Calls = new List<CallOption>();   // 手牌をクリックして選べるチー・ポン
+        public Action Pass;                // スルー（打牌に対する操作待ちのときのみ）
+    }
+
+    /// <summary>手牌の牌を選んで行えるチー・ポン。Use は既定で使う牌、Exec に実際に使う牌を渡して実行する。</summary>
+    public class CallOption
+    {
+        public int Q;
+        public char L;
+        public List<int> Use;
+        public Action<List<int>> Exec;
     }
 
     /// <summary>
@@ -49,7 +60,6 @@ namespace PaifuViewer
         public bool Rii;
         public string Bn = "";
         public BranchActions Acts = new BranchActions();
-        public List<KeyValuePair<int, string>> Events = new List<KeyValuePair<int, string>>();
 
         public bool Loaded { get { return K != null; } }
         public bool Branching { get { return BR != null; } }
@@ -91,33 +101,57 @@ namespace PaifuViewer
             Steps = RD.Steps;
             I = 0;
             if (!View.HasValue) View = Math.Max(0, Array.FindIndex(Names, x => !string.IsNullOrEmpty(x) && x != "AI"));
-            int n = Steps.Count - 1;
-            Events = new List<KeyValuePair<int, string>>();
-            for (int j = 0; j < Steps.Count; j++)
-            {
-                var s = Steps[j];
-                string kind = j == 0 ? "配牌"
-                    : j == n ? (s.Msg.StartsWith("和了") ? "和了" : "流局")
-                    : s.Msg.Contains("チー") || s.Msg.Contains("ポン") || s.Msg.Contains("槓") ? "鳴き"
-                    : s.Msg.Contains("立直") ? "リーチ" : "";
-                if (kind != "") Events.Add(new KeyValuePair<int, string>(j, s.Jn + "巡 " + kind));
-            }
             Refresh();
         }
 
+        /// <summary>巡目選択のジャンプ先（配牌・鳴き・リーチ・終局）。分岐中は分岐の局面列から作る。</summary>
+        public List<KeyValuePair<int, string>> Events
+        {
+            get
+            {
+                var o = new List<KeyValuePair<int, string>>();
+                if (!Loaded) return o;
+                var log = Log;
+                for (int j = 0; j < log.Count; j++)
+                {
+                    var s = log[j];
+                    string kind = j == 0 ? (BR != null ? "分岐元" : "配牌")
+                        : s.Ph == "e" ? (s.Msg.Contains("和了") ? "和了" : "流局")
+                        : IsCall(s) ? "鳴き"
+                        : s.Msg.Contains("立直") ? "リーチ" : "";
+                    if (kind != "") o.Add(new KeyValuePair<int, string>(j, s.Jn + "巡 " + kind));
+                }
+                return o;
+            }
+        }
+
+        /// <summary>n 手目へ移動する。分岐の末尾がツモ待ちなら、先へ進むと牌山どおりにツモる。</summary>
         public void Go(int n)
         {
             if (!Loaded) return;
-            if (BR != null) Bi = Math.Max(0, Math.Min(BR.Count - 1, n));
+            if (BR != null)
+            {
+                if (n > BR.Count - 1 && Bi == BR.Count - 1 && Cs.Ph == "w") { Nxt(); return; }
+                Bi = Math.Max(0, Math.Min(BR.Count - 1, n));
+            }
             else I = Math.Max(0, Math.Min(Steps.Count - 1, n));
             Refresh();
         }
 
+        /// <summary>巡目単位で移動する（分岐中は分岐の局面列の中で移動）。</summary>
         public void Jump(int d)
         {
-            if (BR != null || !Loaded) return;
-            int t = Steps[I].Jn + d, j = Steps.FindIndex(x => x.Jn == t);
+            if (!Loaded) return;
+            var log = Log;
+            int t = Cs.Jn + d, j = log.FindIndex(x => x.Jn == t);
+            if (j < 0 && d < 0) j = 0;
             if (j >= 0) Go(j);
+        }
+
+        /// <summary>スルー（打牌に対して何もしない）。打牌への操作待ちでなければ何もしない。</summary>
+        public void Through()
+        {
+            if (Acts.Pass != null) Acts.Pass();
         }
 
         // =====================================================================
@@ -524,7 +558,8 @@ namespace PaifuViewer
                     }
                     if (P.Ri || s.Wall <= 0) continue;
                     var sm = P.H.Where(c => Tiles.Norm(c) == nn).ToList();
-                    if (sm.Count >= 2) { var use = sm.Take(2).ToList(); B(r, "ポン", () => DoCall(r, 'p', use, dc)); }
+                    Action<char, List<int>> opt = (l, use) => A.Calls.Add(new CallOption { Q = r, L = l, Use = use, Exec = u => DoCall(r, l, u, dc) });
+                    if (sm.Count >= 2) { var use = sm.Take(2).ToList(); B(r, "ポン", () => DoCall(r, 'p', use, dc)); opt('p', use); }
                     if (sm.Count >= 3 && KanCount(s) < 4) { var use = sm.Take(3).ToList(); B(r, "カン", () => DoCall(r, 'm', use, dc)); }
                     if (k == 1 && nn < 40)
                     {
@@ -537,18 +572,27 @@ namespace PaifuViewer
                             if (!u.HasValue || !v.HasValue) continue;
                             var use = new List<int> { u.Value, v.Value };
                             B(r, "チー " + Tiles.Tn(u.Value) + Tiles.Tn(v.Value), () => DoCall(r, 'c', use, dc));
+                            opt('c', use);
                         }
                     }
                 }
                 A.CanCall = A.Buttons.Count > 0;
-                A.Text = N(q) + "の " + Tiles.Tn(dc) + " に対する操作：視点の手牌の右上に出るボタンで鳴くか、「スルー」で次へ";
+                A.Text = N(q) + "の " + Tiles.Tn(dc) + " に対する操作：ボタンか、鳴きに使う手牌のクリックで鳴けます。"
+                    + "鳴かない場合は「スルー」（卓のダブルクリック・右クリックでも可）";
+                A.Pass = Pass;
                 B(-1, "スルー", Pass);
             }
             else if (s.Ph == "w")
             {
-                A.Unseen = Unseen(s);
-                A.PickAction = c => DrawFromWall(c);
-                A.Text = (RD.HasWall ? "牌山が尽きたため、" : "牌山データがなく牌譜のツモも尽きたため、") + N(s.T) + "のツモ牌を卓上の一覧から選んでください";
+                var src = s.Rin ? RD.RW : RD.LW;
+                if ((s.Rin ? s.Rd : s.Ld) < src.Count)
+                    A.Text = N(s.T) + "のツモ：次へ進む（→・卓クリック）と牌山どおりにツモります";
+                else
+                {
+                    A.Unseen = Unseen(s);
+                    A.PickAction = c => DrawFromWall(c);
+                    A.Text = (RD.HasWall ? "牌山が尽きたため、" : "牌山データがなく牌譜のツモも尽きたため、") + N(s.T) + "のツモ牌を卓上の一覧から選んでください";
+                }
             }
             else A.Text = "局終了（" + FirstLine(s.Msg) + "）";
             return A;

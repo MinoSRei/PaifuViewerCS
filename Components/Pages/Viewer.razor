@@ -12,22 +12,34 @@
             <button class="@(showWall ? "on" : null)" @onclick="() => showWall = !showWall">牌山</button>
         }
         <label>視点
-            <select value="@(S.View ?? 0)" @onchange="e => S.View = int.Parse((string)e.Value)">
-                @for (int q = 0; q < 4; q++)
+            <select value="@ViewQ" disabled="@(!S.Loaded || FollowingTurn)" @onchange="e => S.View = int.Parse((string)e.Value)">
+                @if (S.Loaded)
                 {
-                    <option value="@q">@S.Nmq(q)</option>
+                    for (int q = 0; q < 4; q++)
+                    {
+                        <option value="@q">@S.Nmq(q)</option>
+                    }
                 }
             </select>
         </label>
-        <label><input type="checkbox" @bind="showOthers" /> 他家の手牌を表向きに表示</label>
+        @if (S.Branching)
+        {
+            @* 分岐中は全員の手牌を表で表示するため、代わりに手番の視点へ自動で移動するかを選ぶ *@
+            <label><input type="checkbox" @bind="followTurn" /> 手番の視点に移動する</label>
+        }
+        else
+        {
+            <label><input type="checkbox" @bind="showOthers" /> 他家の手牌を表向きに表示</label>
+        }
         <span class="ttl">@(error ?? (S.Loaded ? S.RoundName + (S.Branching ? "　● 分岐編集中" : "　● 牌譜を閲覧中") : ""))</span>
     </header>
 
     @if (S.Loaded)
     {
         var s = S.Cs;
-        int v = S.View ?? 0;
+        int v = ViewQ;
         var A = S.Acts;
+        var picked = ReferenceEquals(selStep, s) ? sel : new List<int>();
         <div class="main">
             <aside class="left">
                 <h3>局一覧</h3>
@@ -77,8 +89,9 @@
 
             <section class="center">
                 <h3>卓表示｜@(s.Jn)巡目　@(s.T >= 0 ? ViewerState.Wn(s.T, s) + " " + S.Nmq(s.T) + "の手番" : "局終了")　｜　@ViewerState.FirstLine(s.Msg)</h3>
-                <svg class="board" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet">
-                    <rect class="table @(CanTsumogiri ? "clk" : null)" x="2" y="2" width="996" height="996" rx="18" @onclick="TableClick" />
+                <svg class="board" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet"
+                     @ondblclick="DoubleClick" @oncontextmenu="S.Through" @oncontextmenu:preventDefault="S.Branching">
+                    <rect class="table @(TableClickable ? "clk" : null)" x="2" y="2" width="996" height="996" rx="18" @onclick="TableClick" />
 
                     @* 卓中央：局名・ドラ・供託・残り枚数 *@
                     <rect class="cbox" x="380" y="380" width="240" height="240" rx="10" />
@@ -147,6 +160,11 @@
                                 {
                                     @Clickable(p.H[j], hx, HandY, TW, TH, A.HandActions[j])
                                 }
+                                else if (CallTile(q, p.H[j]))
+                                {
+                                    int jj = j;
+                                    @Clickable(p.H[j], hx, HandY, TW, TH, () => PickCallTile(q, jj), picked.Contains(j) && selQ == q ? "sel" : null)
+                                }
                                 else
                                 {
                                     @Img(p.H[j], hx, HandY, TW, TH, false, null, canDiscard)
@@ -208,7 +226,7 @@
                     }
                     @foreach (var b in A.Buttons)
                     {
-                        var lb = b.Q >= 0 && b.Q != v ? new BoardButton { Q = b.Q, Label = ViewerState.Wn(b.Q, s) + " " + b.Label, Act = b.Act } : b;
+                        var lb = b.Q >= 0 ? new BoardButton { Q = b.Q, Label = Rel[(b.Q - v + 4) % 4] + " " + b.Label, Act = b.Act } : b;
                         double bw = BtnW(lb.Label, ButtonH);
                         if (bRight - bw < BarLeft && bRight < BarRight) { bRight = BarRight; by -= ButtonH + 8; }
                         @Btn(lb, bRight - bw, by, ButtonH)
@@ -281,7 +299,28 @@
     }
     else
     {
-        <div class="main empty">牌譜を読み込んでください</div>
+        @* 読み込み前：各欄と卓は空のまま表示する *@
+        <div class="main">
+            <aside class="left">
+                <h3>局一覧</h3>
+                <h3>局情報</h3>
+                <h3>巡目選択</h3>
+                <h3>再生</h3>
+            </aside>
+            <section class="center">
+                <h3>卓表示</h3>
+                <svg class="board" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet">
+                    <rect class="table" x="2" y="2" width="996" height="996" rx="18" />
+                    <text class="empty-msg" x="500" y="500">牌譜（JSON）を読み込んでください</text>
+                </svg>
+            </section>
+            <aside class="right">
+                <h3>分岐</h3>
+                <h3>状態</h3>
+                <h3>ログ</h3>
+                <h3>局の結果</h3>
+            </aside>
+        </div>
     }
 
     <footer class="hint">操作：← → 1手移動　Space 再生/停止　JSONはドラッグ＆ドロップでも読み込めます　｜　牌画像：<a href="https://mj-king.net/sozai/" target="_blank" rel="noopener">麻雀王国 麻雀素材</a></footer>
@@ -295,20 +334,25 @@
     const double BarLeft = 620, BarRight = 925;                  // 操作ボタンを置く範囲（右隣の家の手牌に重ならない幅）
 
     static readonly string[] Honors = { "ji_e", "ji_s", "ji_w", "ji_n", "no", "ji_h", "ji_c" };
+    static readonly string[] Rel = { "自家", "下家", "対面", "上家" };   // 視点から見た相対位置
 
     readonly ViewerState S = new ViewerState();
     string error;
-    bool showOthers = true, playing, showWall;
+    bool showOthers = true, playing, showWall, followTurn;
     double speed = 1;
     System.Threading.Timer timer;
     DotNetObjectReference<Viewer> self;
     int scrolledTo = -1;
 
-    protected override void OnInitialized()
-    {
-        try { S.Load(SampleData.Json); }
-        catch (Exception ex) { error = "読み込めませんでした：" + ex.Message; }
-    }
+    // 手牌クリックで選んでいるチー・ポンの牌（selStep の局面での selQ の家の手牌の添字）
+    readonly List<int> sel = new List<int>();
+    Step selStep;
+    int selQ = -1;
+
+    bool FollowingTurn => S.Branching && followTurn;
+
+    /// <summary>表示する視点。「手番の視点に移動する」がオンなら分岐中は手番の家。</summary>
+    int ViewQ => S.Loaded && FollowingTurn && S.Cs.T >= 0 ? S.Cs.T : S.View ?? 0;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -340,8 +384,8 @@
             <rect class="ol" x="@F(x)" y="@F(y)" width="@F(w)" height="@F(h)" rx="4" />
         </g>;
 
-    RenderFragment Clickable(int c, double x, double y, double w, double h, Action act) =>
-        @<g class="tile clk" @onclick="act">
+    RenderFragment Clickable(int c, double x, double y, double w, double h, Action act, string cls = null) =>
+        @<g class="tile clk @cls" @onclick="act">
             <rect class="hit" x="@F(x)" y="@F(y)" width="@F(w)" height="@F(h + 12)" />
             <image href="@Url(c, false)" x="@F(x)" y="@F(y)" width="@F(w)" height="@F(h)" preserveAspectRatio="none" />
             <rect class="ol" x="@F(x)" y="@F(y)" width="@F(w)" height="@F(h)" rx="4" />
@@ -362,9 +406,65 @@
 
     bool CanTsumogiri => S.Branching && S.Acts.DrawnOk && S.Acts.DrawnAction != null;
 
+    /// <summary>卓クリックで何か起きるか：閲覧中は 1 手進む、分岐中はツモ切り（ツモ待ちなら牌山どおりにツモ）。</summary>
+    bool TableClickable => S.Loaded && (!S.Branching ? S.Cx < S.Count - 1 : CanTsumogiri || S.Cs.Ph == "w" && S.Acts.Unseen == null);
+
+    Step clickedAt;   // 直前に卓をクリックしたときの局面
+
     void TableClick()
     {
-        if (CanTsumogiri) S.Acts.DrawnAction();
+        if (!S.Loaded) return;
+        clickedAt = S.Cs;
+        if (!S.Branching) { Play(false); S.Go(S.Cx + 1); }
+        else if (CanTsumogiri) S.Acts.DrawnAction();
+        else if (S.Cs.Ph == "w" && S.Acts.Unseen == null) S.Go(S.Cx + 1);
+    }
+
+    /// <summary>
+    /// ダブルクリックでスルー。ダブルクリックの 1 回目のクリックでツモ切りした場合（その打牌への操作待ちになった直後）は
+    /// スルーしない。
+    /// </summary>
+    void DoubleClick()
+    {
+        if (ReferenceEquals(clickedAt, S.Cs)) S.Through();
+    }
+
+    /// <summary>q の家の手牌の牌 c がチー・ポンに使えるか。</summary>
+    bool CallTile(int q, int c) => S.Acts.Calls.Any(o => o.Q == q && o.Use.Any(u => Tiles.Norm(u) == Tiles.Norm(c)));
+
+    /// <summary>
+    /// 鳴きに使う手牌を 1 枚ずつ選ぶ。選んだ牌を含む鳴き方が 1 通りに決まったら、その牌で鳴く。
+    /// 例：4m に対して 2356m なら、2 を選べば 23 でチー、3 を選ぶと 23・35 の 2 通りなので次の 1 枚を待つ。
+    /// </summary>
+    void PickCallTile(int q, int j)
+    {
+        var s = S.Cs;
+        if (!ReferenceEquals(selStep, s) || selQ != q) { sel.Clear(); selStep = s; selQ = q; }
+        if (sel.Remove(j)) return;
+        sel.Add(j);
+        var h = s.Pl[q].H;
+        var opts = MatchCalls(q, h);
+        if (opts.Count == 0) { sel.Clear(); sel.Add(j); opts = MatchCalls(q, h); }
+        if (opts.Count != 1) return;
+
+        // 選んだ牌（赤5 などの区別を保つ）に、残りを既定の牌で補う
+        var use = sel.Select(i => h[i]).ToList();
+        var rest = new List<int>(opts[0].Use);
+        foreach (int c in use) rest.RemoveAt(rest.FindIndex(x => Tiles.Norm(x) == Tiles.Norm(c)));
+        use.AddRange(rest);
+        Tiles.Sort(use);
+        sel.Clear();
+        opts[0].Exec(use);
+    }
+
+    List<CallOption> MatchCalls(int q, List<int> h)
+    {
+        return S.Acts.Calls.Where(o =>
+        {
+            if (o.Q != q) return false;
+            var rest = o.Use.Select(Tiles.Norm).ToList();
+            return sel.All(i => rest.Remove(Tiles.Norm(h[i])));
+        }).ToList();
     }
 
     /// <summary>牌山：牌山データがあれば 136 枚を配牌・ツモ山・王牌に分けて、なければ牌譜のツモ順を表示する。</summary>
