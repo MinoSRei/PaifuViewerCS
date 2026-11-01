@@ -98,3 +98,5 @@ svg.board text { font-family: "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", s
     svg.board { flex: none; aspect-ratio: 1; }
     aside.left, aside.right { border: 0; }
 }
+.wall-ok { color: var(--acc); font-size: 12px; }
+.wall-ng { color: var(--note); font-size: 12px; }

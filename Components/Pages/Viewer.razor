@@ -38,7 +38,8 @@
                 <div class="pad">
                     @S.RoundName<br />
                     ドラ @string.Join(" ", S.Dora(s).Select(Tiles.Tn))<br />
-                    供託 @S.Kyotaku(s).ToString("N0")
+                    供託 @S.Kyotaku(s).ToString("N0")<br />
+                    <span class="@(S.RD.HasWall ? "wall-ok" : "wall-ng")">@S.RD.WallStatus</span>
                 </div>
                 <h3>巡目選択</h3>
                 <div class="pad">

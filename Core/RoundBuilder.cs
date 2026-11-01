@@ -47,13 +47,16 @@ namespace PaifuViewer
             sc = J.Ints(k[1]).ToArray();
         }
 
-        public static RoundData Build(List<object> k, string[] names)
+        /// <param name="paishan">雀魂の牌山 136 枚（拡張キー "paishan"）。なければ null。</param>
+        public static RoundData Build(List<object> k, string[] names, List<int> paishan = null)
         {
             if (k.Count < 17) throw new FormatException("局データの要素数が不足しています");
             var b = new RoundBuilder(k, names);
             b.Run(k);
             foreach (var s in b.S) s.Jn = s.CalcJn();
-            return new RoundData { Steps = b.S, LW = b.LW, RW = b.RW };
+            var rd = new RoundData { Steps = b.S, LW = b.LW, RW = b.RW };
+            WallAligner.Apply(rd, paishan);
+            return rd;
         }
 
         public static string CallName(char l)

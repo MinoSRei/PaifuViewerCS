@@ -68,6 +68,8 @@ namespace PaifuViewer
     public class RoundData
     {
         public List<Step> Steps;
-        public List<int> LW, RW;  // 牌譜どおりの通常ツモ列・嶺上ツモ列
+        public List<int> LW, RW;  // 通常ツモ列・嶺上ツモ列（牌山データがあれば牌山の最後まで）
+        public bool HasWall;
+        public string WallStatus = "牌山データなし";
     }
 }

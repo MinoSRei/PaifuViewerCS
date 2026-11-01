@@ -37,6 +37,7 @@ namespace PaifuViewer
         public string[] Names = new string[0];
         public List<object> Rounds = new List<object>();
         public List<object> K;
+        public List<object> Paishan = new List<object>();   // 拡張キー "paishan"（局ごとの牌山）
         public RoundData RD;
         public List<Step> Steps;
         public int I, Rc;
@@ -69,10 +70,13 @@ namespace PaifuViewer
                 throw new FormatException("天鳳6形式の牌譜ではありません");
             var rounds = J.L(logO);
             var names = dict.TryGetValue("name", out nameO) ? J.L(nameO).Select(x => J.S(x)).ToArray() : new string[0];
+            object wallO;
+            var paishan = dict.TryGetValue("paishan", out wallO) ? J.L(wallO) : new List<object>();
             // 1 局目を先に展開して、壊れたデータなら現在の表示を保つ
             RoundBuilder.Build(J.L(rounds[0]), names);
             Names = names;
             Rounds = rounds;
+            Paishan = paishan;
             View = null;
             SetRound(0);
         }
@@ -82,7 +86,7 @@ namespace PaifuViewer
             BR = null;
             Rc = r;
             K = J.L(Rounds[r]);
-            RD = RoundBuilder.Build(K, Names);
+            RD = RoundBuilder.Build(K, Names, r < Paishan.Count ? J.Ints(Paishan[r]) : null);
             Steps = RD.Steps;
             I = 0;
             if (!View.HasValue) View = Math.Max(0, Array.FindIndex(Names, x => !string.IsNullOrEmpty(x) && x != "AI"));
@@ -311,7 +315,7 @@ namespace PaifuViewer
             var A = new BranchActions();
             if (BR == null)
             {
-                A.Text = "任意の局面で「分岐開始」を押すと、卓上の牌やボタンを直接操作して牌譜と別の展開を確認できます（ツモは牌譜の牌山どおり）。";
+                A.Text = "任意の局面で「分岐開始」を押すと、卓上の牌やボタンを直接操作して牌譜と別の展開を確認できます（ツモは牌譜の牌山どおり）。" + (RD.HasWall ? "" : "牌山データがないため、牌譜にないツモは未使用牌から選びます。");
                 return A;
             }
             Action<int, string, Action> B = (bq, label, f) => A.Buttons.Add(new BoardButton { Q = bq, Label = label, Act = f });
@@ -387,7 +391,7 @@ namespace PaifuViewer
             {
                 A.Unseen = Unseen(s);
                 A.PickAction = c => DrawFromWall(c);
-                A.Text = "牌譜の牌山が尽きたため、" + N(s.T) + "のツモ牌を卓上の一覧から選んでください";
+                A.Text = (RD.HasWall ? "牌山が尽きたため、" : "牌山データがなく牌譜のツモも尽きたため、") + N(s.T) + "のツモ牌を卓上の一覧から選んでください";
             }
             else A.Text = "局終了（" + FirstLine(s.Msg) + "）";
             return A;

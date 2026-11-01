@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MajSoul → NAGA
 // @namespace    https://github.com/AsaChiri/majsoul-naga
-// @version      1.0.1
+// @version      1.1.0
 // @description  Capture the current MahjongSoul 4-player replay and request a NAGA analysis, entirely in-browser.
 // @author       AsaChiri
 // @homepageURL  https://github.com/AsaChiri/majsoul-naga
@@ -138,6 +138,16 @@
     return x.num === 0 && x.t !== TYPE.z ? { num: 5, t: x.t } : x;
   }
   const tEq = (a, b) => a.num === b.num && a.t === b.t;
+  // RecordNewRound.paishan: the whole wall as 2-char tiles ("1m2m0p…", 136 tiles)
+  function parsePaishan(s) {
+    const out = [];
+    for (let i = 0; i + 1 < s.length; i += 2) {
+      const x = tile(s.slice(i, i + 2));
+      if (Number.isNaN(x.num) || x.t === undefined) return [];
+      out.push(tEnc(x));
+    }
+    return out;
+  }
 
   // ---- meld / discard encoders (return int or string) -------------------
   function encDiscard(s) {
@@ -373,6 +383,7 @@
       draws: [[], [], [], []],
       discards: [[], [], [], []],
       haipais,
+      paishan: parsePaishan(pstr(m, 14)),
       result: null,
     };
     this.dealer = pint(m, 2);
@@ -665,7 +676,10 @@
     const log = parser.kyokus.map(dumpKyoku);
     const disp = (meta.mode === 1 ? "東" : "南") + "喰赤"; // display only
     const ts = meta.endTime ? new Date(meta.endTime * 1000).toISOString().slice(0, 19).replace("T", " ") : "";
-    return {
+    // Extension (not part of tenhou.net/6): per-round wall in tenhou tile codes,
+    // index-aligned with `log`. Viewers that don't know the key ignore it.
+    const paishan = parser.kyokus.map((k) => k.paishan || []);
+    const out = {
       ver: "2.3",
       ref: meta.uuid,
       ratingc: "PF4",
@@ -679,6 +693,8 @@
       title: [disp, ts],
       log,
     };
+    if (paishan.some((p) => p.length)) out.paishan = paishan;
+    return out;
   }
   function recordToTenhou(resBytes) {
     // sync path (inline data); used by tests
@@ -917,6 +933,9 @@
 
       // Decode verification — inspect these in DevTools to confirm conversion.
       log("decoded " + tenhou.log.length + " rounds; ref=" + tenhou.ref + "; game_type=" + gameType);
+      const nWall = tenhou.paishan ? tenhou.paishan.filter((p) => p.length).length : 0;
+      log("paishan (wall) found for " + nWall + "/" + tenhou.log.length + " rounds");
+      if (nWall < tenhou.log.length) warn("some rounds have no paishan in this record");
       log("round 0 (tenhou.net/6):", JSON.stringify(tenhou.log[0]));
       log("full tenhou log object:", tenhou);
       log(
@@ -932,7 +951,7 @@
       document.body.appendChild(a);
       a.click();
       a.remove();
-      toast("Saved " + a.download, 6000);
+      toast("Saved " + a.download + "（牌山 " + nWall + "/" + tenhou.log.length + " 局）", 6000);
     } catch (e) {
       toast("Error: " + e.message, 8000);
       logError(e);
