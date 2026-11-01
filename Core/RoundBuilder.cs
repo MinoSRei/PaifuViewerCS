@@ -190,7 +190,9 @@ namespace PaifuViewer
                 last = cur;
                 Snap(Nm(cur) + " 打 " + Tiles.Tn(tl) + (ri ? "（立直）" : ""), cur);
 
-                // ポン・大明槓を優先し、次にチーを、下家から順に探す
+                // ポン・大明槓を優先し、次にチーを、下家から順に探す。
+                // 鳴いた牌の位置が鳴いた相手を表す（0=上家 1=対面 2,3=下家）ので、相手が打牌者と一致するものだけを採る。
+                // 一致を見ないと、同じ牌を先に切った別の家から鳴いたことになり、以降の手順とツモ順が狂う
                 call = null;
                 foreach (string re in new[] { "pm", "c" })
                 {
@@ -201,7 +203,8 @@ namespace PaifuViewer
                         string s = sp.A < sp.Dr.Count ? sp.Dr[sp.A] as string : null;
                         if (s == null || s.IndexOfAny(re.ToCharArray()) < 0) continue;
                         var z = ParseCall(s);
-                        if (Tiles.Norm(z.T[z.Ci]) == Tiles.Norm(tl)) { call = s; sp.A++; cur = q; }
+                        int from = z.Ci == 0 ? 1 : z.Ci == 1 ? 2 : 3;   // 打牌者が q から見て何家先か（上家=1）
+                        if (Tiles.Norm(z.T[z.Ci]) == Tiles.Norm(tl) && from == o) { call = s; sp.A++; cur = q; }
                     }
                 }
                 if (call == null) cur = (cur + 1) % 4;
