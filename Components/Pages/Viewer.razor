@@ -1,0 +1,421 @@
+@page "/"
+@implements IDisposable
+@inject IJSRuntime JS
+@using System.Globalization
+
+<div class="app">
+    <header class="top">
+        <b class="logo">牌譜ビューア</b>
+        <label class="btn">牌譜を読み込む<InputFile OnChange="OnFile" accept=".json,application/json" hidden /></label>
+        <label>視点
+            <select value="@(S.View ?? 0)" @onchange="e => S.View = int.Parse((string)e.Value)">
+                @for (int q = 0; q < 4; q++)
+                {
+                    <option value="@q">@S.Nmq(q)</option>
+                }
+            </select>
+        </label>
+        <label><input type="checkbox" @bind="showOthers" /> 他家の手牌を表向きに表示</label>
+        <span class="ttl">@(error ?? (S.Loaded ? S.RoundName + (S.Branching ? "　● 分岐編集中" : "　● 牌譜を閲覧中") : ""))</span>
+    </header>
+
+    @if (S.Loaded)
+    {
+        var s = S.Cs;
+        int v = S.View ?? 0;
+        var A = S.Acts;
+        <div class="main">
+            <aside class="left">
+                <h3>局一覧</h3>
+                <div class="rl">
+                    @for (int j = 0; j < S.Rounds.Count; j++)
+                    {
+                        int jj = j;
+                        <button class="@(j == S.Rc ? "on" : null)" @onclick="() => { Play(false); S.SetRound(jj); }">@ViewerState.Rname(J.L(S.Rounds[j]))</button>
+                    }
+                </div>
+                <h3>局情報</h3>
+                <div class="pad">
+                    @S.RoundName<br />
+                    ドラ @string.Join(" ", S.Dora(s).Select(Tiles.Tn))<br />
+                    供託 @S.Kyotaku(s).ToString("N0")
+                </div>
+                <h3>巡目選択</h3>
+                <div class="pad">
+                    <div class="jr">
+                        <button @onclick="() => S.Jump(-1)">◀</button>
+                        <span>@(S.Branching ? s.Jn + "巡目（分岐 " + S.Bi + "/" + (S.BR.Count - 1) + "手）" : s.Jn + " / " + S.Last.Jn + "巡目（" + S.I + "/" + (S.Steps.Count - 1) + "手）")</span>
+                        <button @onclick="() => S.Jump(1)">▶</button>
+                    </div>
+                    <input type="range" class="sl" min="0" max="@(S.Count - 1)" value="@S.Cx" @oninput="e => S.Go(int.Parse((string)e.Value))" />
+                    <div class="evs">
+                        @foreach (var ev in S.Events)
+                        {
+                            var j = ev.Key;
+                            <button @onclick="() => S.Go(j)">@ev.Value</button>
+                        }
+                    </div>
+                </div>
+                <h3>再生</h3>
+                <div class="pad play">
+                    <button @onclick="() => S.Go(S.Cx - 1)">◀</button>
+                    <button @onclick="() => Play(!playing)">@(playing ? "⏸" : "▶")</button>
+                    <button @onclick="() => S.Go(S.Cx + 1)">▶|</button>
+                    <select value="@speed.ToString(CultureInfo.InvariantCulture)" @onchange="SetSpeed">
+                        <option value="0.5">0.5×</option>
+                        <option value="1">1.0×</option>
+                        <option value="2">2.0×</option>
+                        <option value="4">4.0×</option>
+                    </select>
+                </div>
+            </aside>
+
+            <section class="center">
+                <h3>卓表示｜@(s.Jn)巡目　@(s.T >= 0 ? ViewerState.Wn(s.T, s) + " " + S.Nmq(s.T) + "の手番" : "局終了")　｜　@ViewerState.FirstLine(s.Msg)</h3>
+                <svg class="board" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet">
+                    <rect class="table" x="2" y="2" width="996" height="996" rx="18" />
+
+                    @* 卓中央：局名・ドラ・供託・残り枚数 *@
+                    <rect class="cbox" x="380" y="380" width="240" height="240" rx="10" />
+                    <text class="cname" x="500" y="442">@S.RoundName</text>
+                    @{
+                        var dora = S.Dora(s);
+                        double dx = 500 - dora.Count * 30 / 2.0;
+                    }
+                    @foreach (var c in dora)
+                    {
+                        @Img(c, dx, 458, 28, 37)
+                        dx += 30;
+                    }
+                    <text class="cinfo" x="500" y="509">供託 @S.Kyotaku(s).ToString("N0")　残り @(s.Wall)枚</text>
+                    @{
+                        var cbs = A.Buttons.Where(b => b.Q < 0).ToList();
+                        double cbx = 500 - (cbs.Sum(b => BtnW(b.Label, 36)) + (cbs.Count - 1) * 6) / 2;
+                    }
+                    @foreach (var b in cbs)
+                    {
+                        @Btn(b, cbx, 528, 36)
+                        cbx += BtnW(b.Label, 36) + 6;
+                    }
+
+                    @* 各家（自分の席を下にして描き、回転させる）*@
+                    @for (int q0 = 0; q0 < 4; q0++)
+                    {
+                        int q = q0;
+                        var p = s.Pl[q];
+                        int pos = (q - v + 4) % 4;
+                        bool turn = s.T == q, open = q == v || showOthers || S.Branching, canDiscard = A.DiscardQ == q;
+                        <g transform="@(pos == 0 ? null : "rotate(" + (pos == 1 ? -90 : pos == 2 ? 180 : 90) + " 500 500)")">
+                            @* 名札 *@
+                            @if (turn)
+                            {
+                                <rect class="tag-on" x="386" y="576" width="228" height="40" rx="6" />
+                            }
+                            <text class="tag1 @(turn ? "on" : null)" x="500" y="587">@ViewerState.Wn(q, s)　@S.Nmq(q)</text>
+                            <text class="tag2 @(turn ? "on" : null)" x="500" y="606">@s.Sc[q].ToString("N0")@(p.Ri ? "　立直" : "")</text>
+
+                            @* 河（6 枚ごとに改行、立直宣言牌は横向き）*@
+                            @{
+                                double rx = RiverX;
+                            }
+                            @for (int j = 0; j < p.Rv.Count; j++)
+                            {
+                                if (j > 0 && j % 6 == 0) rx = RiverX;
+                                double ry = RiverY + (j / 6) * (RH + 2);
+                                var r = p.Rv[j];
+                                bool target = A.TargetQ == q && j == p.Rv.Count - 1;
+                                string cls = (r.G ? "tsumogiri " : "") + (target ? "target" : "");
+                                if (r.R)
+                                {
+                                    @Img(r.C, rx, ry + RH - RW, RH, RW, true, cls, r.X)
+                                    rx += RH + 1;
+                                }
+                                else
+                                {
+                                    @Img(r.C, rx, ry, RW, RH, false, cls, r.X)
+                                    rx += RW + 1;
+                                }
+                            }
+
+                            @* 手牌 *@
+                            @{
+                                double hx = HandX;
+                            }
+                            @for (int j = 0; j < p.H.Count; j++)
+                            {
+                                if (!open)
+                                {
+                                    <rect class="back" x="@F(hx)" y="@F(HandY)" width="@F(TW)" height="@F(TH)" rx="4" />
+                                }
+                                else if (canDiscard && A.HandOk[j])
+                                {
+                                    @Clickable(p.H[j], hx, HandY, TW, TH, A.HandActions[j])
+                                }
+                                else
+                                {
+                                    @Img(p.H[j], hx, HandY, TW, TH, false, null, canDiscard)
+                                }
+                                hx += TW + 1;
+                            }
+                            @if (p.Dw.HasValue)
+                            {
+                                hx += 12;
+                                if (!open)
+                                {
+                                    <rect class="back" x="@F(hx)" y="@F(HandY)" width="@F(TW)" height="@F(TH)" rx="4" />
+                                }
+                                else if (canDiscard && A.DrawnOk)
+                                {
+                                    @Clickable(p.Dw.Value, hx, HandY, TW, TH, A.DrawnAction)
+                                }
+                                else
+                                {
+                                    @Img(p.Dw.Value, hx, HandY, TW, TH, false, null, canDiscard)
+                                }
+                                hx += TW + 1;
+                            }
+
+                            @* 副露（鳴いた牌は横向き、暗槓は両端を伏せる）*@
+                            @{
+                                hx += 20;
+                            }
+                            @foreach (var m in p.Ml)
+                            {
+                                for (int j = 0; j < m.T.Count; j++)
+                                {
+                                    if (j == m.Ci && m.L != 'a')
+                                    {
+                                        @Img(m.T[j], hx, HandY + TH - TW, TH, TW, true)
+                                        hx += TH + 1;
+                                    }
+                                    else
+                                    {
+                                        if (m.L == 'a' && (j == 0 || j == 3))
+                                        {
+                                            <rect class="back" x="@F(hx)" y="@F(HandY)" width="@F(TW)" height="@F(TH)" rx="4" />
+                                        }
+                                        else
+                                        {
+                                            @Img(m.T[j], hx, HandY, TW, TH)
+                                        }
+                                        hx += TW + 1;
+                                    }
+                                }
+                                hx += 10;
+                            }
+
+                            @* この家の操作ボタン（手牌の上）*@
+                            @{
+                                double bx = HandX;
+                            }
+                            @foreach (var b in A.Buttons.Where(bt => bt.Q == q))
+                            {
+                                @Btn(b, bx, ButtonY, ButtonH)
+                                bx += BtnW(b.Label, ButtonH) + 8;
+                            }
+                        </g>
+                    }
+
+                    @* 牌山が尽きたときのツモ牌選択 *@
+                    @if (A.Unseen != null)
+                    {
+                        const int perRow = 10;
+                        const double cw = 46, ch = 62;
+                        int rows = Math.Max(1, (A.Unseen.Count + perRow - 1) / perRow);
+                        double pw = perRow * cw + 40, ph = 50 + rows * ch + 64, px = (1000 - pw) / 2, py = (1000 - ph) / 2;
+                        <g class="picker-layer">
+                        <rect class="picker" x="@F(px)" y="@F(py)" width="@F(pw)" height="@F(ph)" rx="12" />
+                        <text class="picker-ttl" x="500" y="@F(py + 26)">@S.N(s.T) のツモ牌を選択（未使用牌）</text>
+                        @for (int j = 0; j < A.Unseen.Count; j++)
+                        {
+                            int c = A.Unseen[j];
+                            @Clickable(c, px + 20 + (j % perRow) * cw + 3, py + 50 + (j / perRow) * ch + 4, cw - 6, ch - 8, () => A.PickAction(c))
+                        }
+                        @Btn(new BoardButton { Label = "ランダム", Act = S.PickRandom }, 500 - BtnW("ランダム", 40) / 2, py + ph - 54, 40)
+                        </g>
+                    }
+                </svg>
+            </section>
+
+            <aside class="right">
+                <h3>分岐</h3>
+                <div class="pad">
+                    @if (S.Branching)
+                    {
+                        <button @onclick="S.EndBranch">分岐終了（元牌譜へ戻る）</button>
+                    }
+                    else
+                    {
+                        <button @onclick="StartBranch">この局面から分岐開始</button>
+                    }
+                    @if (S.Branching && S.Bn != "")
+                    {
+                        <p class="note">@S.Bn</p>
+                    }
+                    <p class="hint-text">@A.Text</p>
+                </div>
+                <h3>状態</h3>
+                <div class="pad">
+                    手番　@(s.T >= 0 ? ViewerState.Wn(s.T, s) : "―")<br />
+                    @(s.Jn)巡目 / 残り@(s.Wall)枚<br />
+                    @for (int q = 0; q < 4; q++)
+                    {
+                        @(ViewerState.Wn(q, s) + " " + S.Nmq(q) + "  " + s.Sc[q].ToString("N0") + (s.Pl[q].Ri ? "（立直）" : ""))<br />
+                    }
+                </div>
+                <h3>ログ</h3>
+                <div class="pad log" id="lg">
+                    @for (int j = 0; j < S.Log.Count; j++)
+                    {
+                        int jj = j;
+                        <div class="@(j == S.Cx ? "cur" : null)" @onclick="() => S.Go(jj)">@(S.Log[j].Jn)巡目：@ViewerState.FirstLine(S.Log[j].Msg)</div>
+                    }
+                </div>
+                <h3>局の結果</h3>
+                <div class="pad res">@(S.Branching && s.Ph == "e" ? s.Msg : S.Last.Msg)</div>
+            </aside>
+        </div>
+    }
+    else
+    {
+        <div class="main empty">牌譜を読み込んでください</div>
+    }
+
+    <footer class="hint">操作：← → 1手移動　Space 再生/停止　JSONはドラッグ＆ドロップでも読み込めます　｜　牌画像：<a href="https://mj-king.net/sozai/" target="_blank" rel="noopener">麻雀王国 麻雀素材</a></footer>
+</div>
+
+@code {
+    // ---- 卓の寸法（仮想座標 1000×1000）----
+    const double HandX = 90, HandY = 934, TW = 40, TH = 54;      // 手牌
+    const double RiverX = 390, RiverY = 630, RW = 34, RH = 46;   // 河
+    const double ButtonY = 880, ButtonH = 44;                    // 操作ボタン
+
+    static readonly string[] Honors = { "ji_e", "ji_s", "ji_w", "ji_n", "no", "ji_h", "ji_c" };
+
+    readonly ViewerState S = new ViewerState();
+    string error;
+    bool showOthers = true, playing;
+    double speed = 1;
+    System.Threading.Timer timer;
+    DotNetObjectReference<Viewer> self;
+    int scrolledTo = -1;
+
+    protected override void OnInitialized()
+    {
+        try { S.Load(SampleData.Json); }
+        catch (Exception ex) { error = "読み込めませんでした：" + ex.Message; }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            self = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("paifu.init", self);
+        }
+        if (S.Loaded && S.Cx != scrolledTo)
+        {
+            scrolledTo = S.Cx;
+            await JS.InvokeVoidAsync("paifu.scrollLog");
+        }
+    }
+
+    static string F(double d) { return d.ToString("0.##", CultureInfo.InvariantCulture); }
+
+    /// <summary>牌画像の URL（麻雀王国 牌画2。赤5 は事前に着色した PNG）。</summary>
+    static string Url(int c, bool side)
+    {
+        int n = Tiles.Norm(c), s = n / 10, k = n % 10;
+        string b = s == 4 ? "p_" + Honors[k - 1] : "p_" + "mps"[s - 1] + "s" + k;
+        return "tiles/" + b + (c > 50 ? "r_" : "_") + (side ? "3" : "1") + (c > 50 ? ".png" : ".gif");
+    }
+
+    RenderFragment Img(int c, double x, double y, double w, double h, bool side = false, string cls = null, bool dim = false) =>
+        @<g class="tile @cls @(dim ? "dim" : null)">
+            <image href="@Url(c, side)" x="@F(x)" y="@F(y)" width="@F(w)" height="@F(h)" preserveAspectRatio="none" />
+            <rect class="ol" x="@F(x)" y="@F(y)" width="@F(w)" height="@F(h)" rx="4" />
+        </g>;
+
+    RenderFragment Clickable(int c, double x, double y, double w, double h, Action act) =>
+        @<g class="tile clk" @onclick="act">
+            <rect class="hit" x="@F(x)" y="@F(y)" width="@F(w)" height="@F(h + 12)" />
+            <image href="@Url(c, false)" x="@F(x)" y="@F(y)" width="@F(w)" height="@F(h)" preserveAspectRatio="none" />
+            <rect class="ol" x="@F(x)" y="@F(y)" width="@F(w)" height="@F(h)" rx="4" />
+        </g>;
+
+    /// <summary>全角 1em・半角 0.58em として幅を見積もる。</summary>
+    static double BtnW(string label, double h)
+    {
+        double fs = h * 0.42;
+        return label.Sum(ch => ch < 128 ? 0.58 : 1.0) * fs + 26;
+    }
+
+    RenderFragment Btn(BoardButton b, double x, double y, double h) =>
+        @<g class="bbtn" @onclick="b.Act">
+            <rect x="@F(x)" y="@F(y)" width="@F(BtnW(b.Label, h))" height="@F(h)" rx="8" />
+            <text x="@F(x + BtnW(b.Label, h) / 2)" y="@F(y + h / 2)" style="font-size:@F(h * 0.42)px">@b.Label</text>
+        </g>;
+
+    void StartBranch()
+    {
+        Play(false);
+        S.StartBranch();
+    }
+
+    void Play(bool on)
+    {
+        timer?.Dispose();
+        timer = null;
+        playing = on;
+        if (!on) return;
+        int ms = (int)(800 / speed);
+        timer = new System.Threading.Timer(_ => InvokeAsync(() =>
+        {
+            if (!playing) return;
+            if (S.Cx >= S.Count - 1) Play(false); else S.Go(S.Cx + 1);
+            StateHasChanged();
+        }), null, ms, ms);
+    }
+
+    void SetSpeed(ChangeEventArgs e)
+    {
+        speed = double.Parse((string)e.Value, CultureInfo.InvariantCulture);
+        if (playing) Play(true);
+    }
+
+    async Task OnFile(InputFileChangeEventArgs e)
+    {
+        using var sr = new StreamReader(e.File.OpenReadStream(10 * 1024 * 1024));
+        LoadText(await sr.ReadToEndAsync());
+    }
+
+    void LoadText(string text)
+    {
+        try
+        {
+            Play(false);
+            S.Load(text);
+            error = null;
+        }
+        catch (Exception ex) { error = "読み込めませんでした：" + ex.Message; }
+    }
+
+    [JSInvokable]
+    public Task LoadJson(string text) => InvokeAsync(() => { LoadText(text); StateHasChanged(); });
+
+    [JSInvokable]
+    public Task OnKey(string key) => InvokeAsync(() =>
+    {
+        if (!S.Loaded) return;
+        if (key == "ArrowLeft") S.Go(S.Cx - 1);
+        else if (key == "ArrowRight") S.Go(S.Cx + 1);
+        else if (key == "Space") Play(!playing);
+        StateHasChanged();
+    });
+
+    public void Dispose()
+    {
+        timer?.Dispose();
+        self?.Dispose();
+    }
+}
