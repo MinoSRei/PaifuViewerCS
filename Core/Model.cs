@@ -47,6 +47,8 @@ namespace PaifuViewer
         public string Msg;
         public int T;
         public bool Rin;          // 次のツモが嶺上牌か
+        public bool Rs;           // この局面のツモが嶺上牌だったか（嶺上開花の判定用）
+        public List<int> Kk;      // 鳴いた直後に切れない牌（喰い替え禁止、Norm 値）
         public int Ld, Rd;        // 牌山・嶺上から何枚ツモったか
         public string Ph;
         public int[] Sc;
@@ -70,6 +72,9 @@ namespace PaifuViewer
         public List<Step> Steps;
         public List<int> LW, RW;  // 通常ツモ列・嶺上ツモ列（牌山データがあれば牌山の最後まで）
         public bool HasWall;
+        public List<int> Wall;    // 牌山 136 枚（ツモ順に並べ替え済み。牌山データがなければ null）
+        public int WallStart;     // Wall のうち最初の通常ツモの位置（それより前は配牌）
+        public int[] RinshanPos;  // 王牌（Wall の末尾 14 枚）のうち嶺上牌の位置。推定できなければ null
         public string WallStatus = "牌山データなし";
     }
 }

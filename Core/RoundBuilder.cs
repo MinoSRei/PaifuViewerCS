@@ -158,9 +158,11 @@ namespace PaifuViewer
                     p.H.Add(d);
                     p.Dw = d;
                     wall--;
+                    bool fromRin = rin;
                     if (rin) { RW.Add(d); rd++; } else { LW.Add(d); ld++; }
                     rin = false;
                     Snap(Nm(cur) + " ツモ " + Tiles.Tn(d), cur);
+                    S[S.Count - 1].Rs = fromRin;
                 }
                 need = true;
                 if (p.B >= p.Ds.Count) break;

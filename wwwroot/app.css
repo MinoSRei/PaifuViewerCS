@@ -66,6 +66,9 @@ aside.right { border-left: 1px solid var(--line); display: flex; flex-direction:
 svg.board { flex: 1; min-height: 0; width: 100%; display: block; user-select: none; }
 svg.board text { font-family: "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", sans-serif; text-anchor: middle; dominant-baseline: central; }
 .table { fill: var(--table); stroke: var(--table-edge); stroke-width: 4; }
+.table.clk { cursor: pointer; }
+/* 卓クリック（ツモ切り）を妨げないよう、操作できない表示物はクリックを素通しする */
+svg.board text, svg.board .cbox, svg.board .tag-on, svg.board .back, svg.board .tile:not(.clk) { pointer-events: none; }
 .cbox { fill: var(--box); stroke: var(--line); stroke-width: 2; }
 .cname { font-size: 20px; font-weight: 700; fill: var(--fg); }
 .cinfo { font-size: 15px; fill: var(--fg); }
@@ -99,4 +102,21 @@ svg.board text { font-family: "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", s
     aside.left, aside.right { border: 0; }
 }
 .wall-ok { color: var(--acc); font-size: 12px; }
+.top button.on { background: var(--acc); color: #fff; border-color: var(--acc); }
+
+/* ---- 牌山（卓の上に重ねて表示）---- */
+.center { position: relative; }
+.wall-pop {
+    position: absolute; inset: 40px 12px 12px; overflow: auto; padding: 10px 14px;
+    background: var(--box); border: 2px solid var(--acc); border-radius: 10px; box-shadow: 0 6px 24px rgba(0, 0, 0, .3);
+}
+.wall-hd { display: flex; align-items: center; gap: 12px; }
+.wall-hd button { margin-left: auto; }
+.wall-pop h4 { margin: 12px 0 4px; font-size: 13px; color: var(--acc); }
+.wall-row { display: flex; flex-wrap: wrap; gap: 2px; }
+.wall-row img { width: 28px; height: 37px; display: block; border: 1px solid var(--line); border-radius: 3px; }
+.wall-row img.used { opacity: .35; }
+.wall-row img.next { outline: 3px solid #ffd54f; outline-offset: -1px; border-radius: 3px; }
+.wall-row .dead { display: flex; flex-direction: column; align-items: center; }
+.wall-row .dead small { font-size: 10px; height: 14px; color: var(--acc); }
 .wall-ng { color: var(--note); font-size: 12px; }

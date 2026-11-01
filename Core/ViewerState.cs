@@ -4,7 +4,7 @@ using System.Linq;
 
 namespace PaifuViewer
 {
-    /// <summary>卓上に出す操作ボタン。Q はボタンを置く家（-1 は卓中央）。</summary>
+    /// <summary>操作ボタン。Q は操作する家（-1 はスルーなど特定の家に属さない操作）。</summary>
     public class BoardButton
     {
         public int Q;
@@ -21,6 +21,7 @@ namespace PaifuViewer
         public bool DrawnOk;          // ツモ牌を切れるか
         public int TargetQ = -1;      // 鳴き・ロン対象の打牌をした家
         public List<BoardButton> Buttons = new List<BoardButton>();
+        public bool CanCall;          // 打牌に対してロン・鳴きのできる家があるか
         public List<int> Unseen;      // 牌山が尽きたときのツモ候補
         public List<Action> HandActions;   // 手牌の各牌を切る操作
         public Action DrawnAction;         // ツモ切り
@@ -44,7 +45,7 @@ namespace PaifuViewer
         public int? View;
 
         public List<Step> BR;
-        public int Bi;
+        public int Bi, Bf;            // 分岐内の位置・分岐元の牌譜の位置
         public bool Rii;
         public string Bn = "";
         public BranchActions Acts = new BranchActions();
@@ -148,10 +149,11 @@ namespace PaifuViewer
             var s = Steps[I];
             if (s.Ph == "e") return;
             BR = new List<Step> { s.Clone() };
+            Bf = I;
             Bi = 0;
             Rii = false;
             Bn = "";
-            if (BR[0].Ph == "w") Nxt(); else Refresh();
+            if (BR[0].Ph == "w") Nxt(); else { Refresh(); AutoPass(); }
         }
 
         public void EndBranch()
@@ -163,6 +165,14 @@ namespace PaifuViewer
 
         void Refresh() { Acts = ComputeActions(Cs); }
 
+        /// <summary>配牌から現在の局面までの局面列（分岐中は分岐元までの牌譜＋分岐）。</summary>
+        List<Step> History()
+        {
+            return BR == null ? Steps.Take(I + 1).ToList() : Steps.Take(Bf).Concat(BR.Take(Bi + 1)).ToList();
+        }
+
+        static bool IsCall(Step s) { return s.Msg.Contains("チー") || s.Msg.Contains("ポン") || s.Msg.Contains("槓"); }
+
         Step Nx(string m, int t, string ph)
         {
             BR.RemoveRange(Bi + 1, BR.Count - Bi - 1);
@@ -172,6 +182,8 @@ namespace PaifuViewer
             n.Ph = ph;
             Bn = "";
             n.Rin = false;
+            n.Rs = false;
+            n.Kk = null;
             n.Jn = n.CalcJn();
             BR.Add(n);
             Bi++;
@@ -179,7 +191,6 @@ namespace PaifuViewer
         }
 
         void Note(string m) { Bn = m; Refresh(); }
-        void Fin(string m) { Nx(m, -1, "e"); Refresh(); }
 
         void Disc(int q, int c, bool w)
         {
@@ -205,6 +216,13 @@ namespace PaifuViewer
             if (r) { p.Ri = true; n.Sc[q] -= 1000; }
             Rii = false;
             Refresh();
+            AutoPass();
+        }
+
+        /// <summary>打牌に対してロン・鳴きのできる家がなければ、そのまま次のツモへ進む。</summary>
+        void AutoPass()
+        {
+            if (Cs.Ph == "c" && !Acts.CanCall) Pass();
         }
 
         void DoCall(int q, char l, List<int> use, int dc)
@@ -219,8 +237,18 @@ namespace PaifuViewer
             var rv = n.Pl[t].Rv;
             rv[rv.Count - 1].X = true;
             p.Ml.Add(new Meld { L = l, T = tl, Ci = ci });
-            if (l == 'm') { n.Dn++; n.Rin = true; Nxt(); }
-            else Refresh();
+            if (l == 'm') { n.Dn++; n.Rin = true; Nxt(); return; }
+
+            // 喰い替え禁止：鳴いた牌と、チーで端を鳴いたときの反対側の筋
+            int nn = Tiles.Norm(dc);
+            n.Kk = new List<int> { nn };
+            if (l == 'c')
+            {
+                var us = use.Select(Tiles.Norm).ToList();
+                if (us.All(x => x > nn) && nn % 10 + 3 <= 9) n.Kk.Add(nn + 3);
+                if (us.All(x => x < nn) && nn % 10 - 3 >= 1) n.Kk.Add(nn - 3);
+            }
+            Refresh();
         }
 
         void DoKan(int q, int k)
@@ -252,7 +280,7 @@ namespace PaifuViewer
         void Pass()
         {
             var s = Cs;
-            if (s.Wall <= 0) { Fin("流局（海底）"); return; }
+            if (s.Wall <= 0) { Ryuukyoku(); return; }
             int q = (s.T + 1) % 4;
             Nx("見送り → " + N(q) + " のツモ", q, "w");
             Nxt();
@@ -265,6 +293,7 @@ namespace PaifuViewer
             bool rn = s0.Rin;
             var n = Nx(N(q) + " ツモ " + Tiles.Tn(c), q, "d");
             n.Pl[q].Dw = c;
+            n.Rs = rn;
             n.Wall--;
             if (rn) n.Rd++; else n.Ld++;
             Refresh();
@@ -279,6 +308,117 @@ namespace PaifuViewer
             if (idx < src.Count) DrawFromWall(src[idx]); else Refresh();
         }
 
+        // =====================================================================
+        // 和了・流局
+        // =====================================================================
+
+        int Honba { get { return J.I(J.L(K[0])[1]); } }
+
+        string DeltaText(int[] d)
+        {
+            return string.Join("\n", Enumerable.Range(0, 4).Where(q => d[q] != 0)
+                .Select(q => N(q) + " " + (d[q] > 0 ? "+" : "") + d[q].ToString("N0")));
+        }
+
+        /// <summary>和了の状況（立直・一発・海底・嶺上・天和など）を局面の履歴から求める。</summary>
+        WinContext Context(Step s, int q, int tile, bool tsumo)
+        {
+            var P = s.Pl[q];
+            var hand = new List<int>(P.H);
+            if (tsumo) { if (P.Dw.HasValue) hand.Add(P.Dw.Value); }
+            else hand.Add(tile);
+            var w = new WinContext
+            {
+                Hand = hand, Melds = P.Ml, WinTile = tile, Tsumo = tsumo,
+                SeatWind = (q - s.Dealer + 4) % 4, RoundWind = (J.I(J.L(K[0])[0]) / 4) % 4,
+                Riichi = P.Ri,
+                Haitei = tsumo && s.Wall <= 0 && !s.Rs, Houtei = !tsumo && s.Wall <= 0,
+                Rinshan = tsumo && s.Rs,
+                DoraInd = Dora(s)
+            };
+            var ura = J.Ints(K[3]);
+            w.UraInd = ura.Count >= s.Dn ? ura.Take(s.Dn).ToList() : null;
+
+            bool noCalls = s.Pl.All(p => p.Ml.Count == 0);
+            w.Tenhou = tsumo && noCalls && P.Rv.Count == 0 && q == s.Dealer;
+            w.Chiihou = tsumo && noCalls && P.Rv.Count == 0 && q != s.Dealer;
+
+            if (P.Ri)
+            {
+                var hist = History();
+                // 一発：立直宣言牌から自分の次の打牌までに誰も鳴いていない
+                for (int j = hist.Count - 1; j >= 0; j--)
+                {
+                    var h = hist[j];
+                    if (IsCall(h)) break;
+                    if (h.Ph == "c" && h.T == q) { w.Ippatsu = h.Pl[q].Rv.Last().R; break; }
+                }
+                // ダブル立直：最初の打牌で立直し、それまでに鳴きがない
+                if (P.Rv.Count > 0 && P.Rv[0].R)
+                {
+                    var rs = hist.FirstOrDefault(h => h.Ph == "c" && h.T == q && h.Pl[q].Rv.Count == 1);
+                    w.DoubleRiichi = rs != null && rs.Pl.All(p => p.Ml.Count == 0);
+                }
+            }
+            return w;
+        }
+
+        /// <summary>
+        /// フリテンか：自分の河に当たり牌がある、または自分の直前の打牌（立直中は立直宣言牌）以降に
+        /// 他家が切った当たり牌を見逃している。現在の打牌そのものは含めない。
+        /// </summary>
+        bool Furiten(Step s, int q)
+        {
+            var P = s.Pl[q];
+            var waits = new HashSet<int>(Enumerable.Range(0, 34).Where(j => Tiles.Agari(new List<int>(P.H) { Tiles.Cd(j) })));
+            if (P.Rv.Any(r => waits.Contains(Tiles.Ix(r.C)))) return true;
+            var hist = History();
+            for (int j = hist.Count - 2; j >= 0; j--)
+            {
+                var h = hist[j];
+                if (h.Ph != "c" || h.T < 0 || h.Pl[h.T].Rv.Count == 0) continue;
+                var last = h.Pl[h.T].Rv.Last();
+                if (h.T == q)
+                {
+                    if (!P.Ri || last.R) break;
+                    continue;
+                }
+                if (waits.Contains(Tiles.Ix(last.C))) return true;
+            }
+            return false;
+        }
+
+        void Win(int q, int from, ScoreResult r)
+        {
+            var s = Cs;
+            string pay;
+            var d = Scoring.Deltas(r, q, from, s.Dealer, Honba, Kyotaku(s), out pay);
+            string head = N(q) + (q == from ? " ツモ和了" : " ロン和了（" + N(from) + "から）");
+            var n = Nx(head + " " + r.HanFu() + " " + pay + "\n" + r.YakuText()
+                + (r.UraUnknown ? "\n※裏ドラは牌譜に記録がないため含めていません" : "")
+                + "\n" + DeltaText(d), -1, "e");
+            for (int k = 0; k < 4; k++) n.Sc[k] += d[k];
+            Refresh();
+        }
+
+        /// <summary>荒牌平局：テンパイの家にノーテン罰符 3000 点を分配する。</summary>
+        void Ryuukyoku()
+        {
+            var s = Cs;
+            var ten = Enumerable.Range(0, 4).Where(q => Tiles.Tenpai(s.Pl[q].H)).ToList();
+            var d = new int[4];
+            if (ten.Count > 0 && ten.Count < 4)
+                for (int q = 0; q < 4; q++) d[q] = ten.Contains(q) ? 3000 / ten.Count : -3000 / (4 - ten.Count);
+            var n = Nx("流局（荒牌平局）\nテンパイ：" + (ten.Count == 0 ? "なし" : string.Join("、", ten.Select(N)))
+                + (ten.Count > 0 && ten.Count < 4 ? "\n" + DeltaText(d) : ""), -1, "e");
+            for (int q = 0; q < 4; q++) n.Sc[q] += d[q];
+            Refresh();
+        }
+
+        // =====================================================================
+        // 合法手
+        // =====================================================================
+
         List<int> Unseen(Step s)
         {
             var a = new int[34];
@@ -292,6 +432,9 @@ namespace PaifuViewer
                 foreach (var m in p.Ml) m.T.ForEach(add);
             }
             foreach (int c in Dora(s)) add(c);
+            // 牌山にまだ残っている牌譜上のツモ牌も使用済みとして扱う（同じ牌が 5 枚になるのを防ぐ）
+            for (int j = s.Ld; j < RD.LW.Count; j++) add(RD.LW[j]);
+            for (int j = s.Rd; j < RD.RW.Count; j++) add(RD.RW[j]);
             var o = new List<int>();
             for (int j = 0; j < 34; j++)
             {
@@ -308,6 +451,8 @@ namespace PaifuViewer
             Tiles.Rm(rest, c);
             return Tiles.Tenpai(rest);
         }
+
+        static int KanCount(Step s) { return s.Pl.Sum(p => p.Ml.Count(m => m.L == 'a' || m.L == 'k' || m.L == 'm')); }
 
         /// <summary>現在の局面で選べる合法手（打牌できる牌・卓上に出すボタン）を求める。</summary>
         BranchActions ComputeActions(Step s)
@@ -326,14 +471,22 @@ namespace PaifuViewer
                 var P = s.Pl[q];
                 var all = new List<int>(P.H);
                 if (P.Dw.HasValue) all.Add(P.Dw.Value);
+                Func<int, bool> notKuikae = c => s.Kk == null || !s.Kk.Contains(Tiles.Norm(c));
                 A.DiscardQ = q;
-                A.HandOk = P.H.Select(c => !P.Ri && (!Rii || TenpaiAfter(all, c))).ToArray();
+                A.HandOk = P.H.Select(c => !P.Ri && notKuikae(c) && (!Rii || TenpaiAfter(all, c))).ToArray();
                 A.DrawnOk = P.Dw.HasValue && (!Rii || TenpaiAfter(all, P.Dw.Value));
-                A.Text = N(q) + "の手番：卓上の手牌をクリックして打牌"
-                    + (Rii ? "（リーチ宣言中：テンパイを保てる牌のみ選べます）" : P.Ri ? "（リーチ中のためツモ切りのみ）" : "");
+                // 喰い替え禁止で切れる牌がなくなる場合は制限しない
+                if (!A.HandOk.Any(x => x) && !A.DrawnOk) A.HandOk = P.H.Select(c => !P.Ri).ToArray();
+                A.Text = N(q) + "の手番：卓上の手牌をクリックして打牌" + (A.DrawnOk ? "（卓をクリックするとツモ切り）" : "")
+                    + (Rii ? "（リーチ宣言中：テンパイを保てる牌のみ選べます）" : P.Ri ? "（リーチ中のためツモ切りのみ）" : "")
+                    + (s.Kk != null ? "（喰い替えになる牌は切れません）" : "");
 
-                if (Tiles.Agari(all)) B(q, "ツモ", () => Fin(N(q) + " ツモ和了（役・点数は未計算）"));
-                if (!P.Ri && s.Wall > 0)
+                if (P.Dw.HasValue && Tiles.Agari(all))
+                {
+                    var sr = Scoring.Evaluate(Context(s, q, P.Dw.Value, true));
+                    if (sr != null) B(q, "ツモ", () => Win(q, q, sr));
+                }
+                if (!P.Ri && s.Wall > 0 && KanCount(s) < 4)
                 {
                     var cn = new SortedDictionary<int, int>();
                     foreach (int c in all)
@@ -360,17 +513,19 @@ namespace PaifuViewer
                 int q = s.T;
                 int dc = s.Pl[q].Rv[s.Pl[q].Rv.Count - 1].C, nn = Tiles.Norm(dc);
                 A.TargetQ = q;
-                A.Text = N(q) + "の " + Tiles.Tn(dc) + " に対する操作：鳴く家の手牌の上のボタンを押すか、中央の「スルー」で次へ";
                 for (int k = 1; k < 4; k++)
                 {
                     int r = (q + k) % 4;
                     var P = s.Pl[r];
-                    if (Tiles.Agari(new List<int>(P.H) { dc }))
-                        B(r, "ロン", () => Fin(N(r) + " ロン和了（" + N(q) + "から／役・点数は未計算）"));
+                    if (Tiles.Agari(new List<int>(P.H) { dc }) && !Furiten(s, r))
+                    {
+                        var sr = Scoring.Evaluate(Context(s, r, dc, false));
+                        if (sr != null) B(r, "ロン", () => Win(r, q, sr));
+                    }
                     if (P.Ri || s.Wall <= 0) continue;
                     var sm = P.H.Where(c => Tiles.Norm(c) == nn).ToList();
                     if (sm.Count >= 2) { var use = sm.Take(2).ToList(); B(r, "ポン", () => DoCall(r, 'p', use, dc)); }
-                    if (sm.Count >= 3) { var use = sm.Take(3).ToList(); B(r, "カン", () => DoCall(r, 'm', use, dc)); }
+                    if (sm.Count >= 3 && KanCount(s) < 4) { var use = sm.Take(3).ToList(); B(r, "カン", () => DoCall(r, 'm', use, dc)); }
                     if (k == 1 && nn < 40)
                     {
                         int su = nn / 10, rk = nn % 10;
@@ -385,6 +540,8 @@ namespace PaifuViewer
                         }
                     }
                 }
+                A.CanCall = A.Buttons.Count > 0;
+                A.Text = N(q) + "の " + Tiles.Tn(dc) + " に対する操作：視点の手牌の右上に出るボタンで鳴くか、「スルー」で次へ";
                 B(-1, "スルー", Pass);
             }
             else if (s.Ph == "w")

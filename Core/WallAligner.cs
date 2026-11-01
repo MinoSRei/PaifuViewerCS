@@ -10,7 +10,7 @@ namespace PaifuViewer
     /// </summary>
     public static class WallAligner
     {
-        const int Total = 136, Dead = 14, Haipai = 52;
+        public const int Total = 136, Dead = 14, Haipai = 52;
 
         // 王牌 14 枚のうち嶺上牌が取られる位置の候補（王牌内の添字）。牌譜の嶺上ツモと一致するものを採用する
         static readonly int[][] RinshanPatterns =
@@ -38,6 +38,9 @@ namespace PaifuViewer
                 rd.LW = seq.Skip(o).Take(Total - Dead - o).ToList();
                 if (pat != null) rd.RW = pat.Select(j => dead[j]).ToList();
                 rd.HasWall = true;
+                rd.Wall = seq;
+                rd.WallStart = o;
+                rd.RinshanPos = pat;
                 rd.WallStatus = "牌山データあり（分岐のツモも牌山どおり"
                     + (pat == null ? "。嶺上牌は牌譜の分のみ" : guessed ? "。嶺上牌の位置は推定" : "") + "）";
                 return;

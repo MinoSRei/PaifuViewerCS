@@ -5,8 +5,12 @@
 
 <div class="app">
     <header class="top">
-        <b class="logo">牌譜ビューア</b>
+        <b class="logo">楽々牌譜エディター</b>
         <label class="btn">牌譜を読み込む<InputFile OnChange="OnFile" accept=".json,application/json" hidden /></label>
+        @if (S.Loaded)
+        {
+            <button class="@(showWall ? "on" : null)" @onclick="() => showWall = !showWall">牌山</button>
+        }
         <label>視点
             <select value="@(S.View ?? 0)" @onchange="e => S.View = int.Parse((string)e.Value)">
                 @for (int q = 0; q < 4; q++)
@@ -74,7 +78,7 @@
             <section class="center">
                 <h3>卓表示｜@(s.Jn)巡目　@(s.T >= 0 ? ViewerState.Wn(s.T, s) + " " + S.Nmq(s.T) + "の手番" : "局終了")　｜　@ViewerState.FirstLine(s.Msg)</h3>
                 <svg class="board" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet">
-                    <rect class="table" x="2" y="2" width="996" height="996" rx="18" />
+                    <rect class="table @(CanTsumogiri ? "clk" : null)" x="2" y="2" width="996" height="996" rx="18" @onclick="TableClick" />
 
                     @* 卓中央：局名・ドラ・供託・残り枚数 *@
                     <rect class="cbox" x="380" y="380" width="240" height="240" rx="10" />
@@ -89,15 +93,6 @@
                         dx += 30;
                     }
                     <text class="cinfo" x="500" y="509">供託 @S.Kyotaku(s).ToString("N0")　残り @(s.Wall)枚</text>
-                    @{
-                        var cbs = A.Buttons.Where(b => b.Q < 0).ToList();
-                        double cbx = 500 - (cbs.Sum(b => BtnW(b.Label, 36)) + (cbs.Count - 1) * 6) / 2;
-                    }
-                    @foreach (var b in cbs)
-                    {
-                        @Btn(b, cbx, 528, 36)
-                        cbx += BtnW(b.Label, 36) + 6;
-                    }
 
                     @* 各家（自分の席を下にして描き、回転させる）*@
                     @for (int q0 = 0; q0 < 4; q0++)
@@ -204,17 +199,20 @@
                                 }
                                 hx += 10;
                             }
-
-                            @* この家の操作ボタン（手牌の上）*@
-                            @{
-                                double bx = HandX;
-                            }
-                            @foreach (var b in A.Buttons.Where(bt => bt.Q == q))
-                            {
-                                @Btn(b, bx, ButtonY, ButtonH)
-                                bx += BtnW(b.Label, ButtonH) + 8;
-                            }
                         </g>
+                    }
+
+                    @* 操作ボタン：誰の操作でも視点の手牌の右上にまとめ、右から詰めて並べる（入りきらなければ上の段へ）*@
+                    @{
+                        double bRight = BarRight, by = ButtonY;
+                    }
+                    @foreach (var b in A.Buttons)
+                    {
+                        var lb = b.Q >= 0 && b.Q != v ? new BoardButton { Q = b.Q, Label = ViewerState.Wn(b.Q, s) + " " + b.Label, Act = b.Act } : b;
+                        double bw = BtnW(lb.Label, ButtonH);
+                        if (bRight - bw < BarLeft && bRight < BarRight) { bRight = BarRight; by -= ButtonH + 8; }
+                        @Btn(lb, bRight - bw, by, ButtonH)
+                        bRight -= bw + 8;
                     }
 
                     @* 牌山が尽きたときのツモ牌選択 *@
@@ -236,6 +234,10 @@
                         </g>
                     }
                 </svg>
+                @if (showWall)
+                {
+                    @WallView(s)
+                }
             </section>
 
             <aside class="right">
@@ -289,13 +291,14 @@
     // ---- 卓の寸法（仮想座標 1000×1000）----
     const double HandX = 90, HandY = 934, TW = 40, TH = 54;      // 手牌
     const double RiverX = 390, RiverY = 630, RW = 34, RH = 46;   // 河
-    const double ButtonY = 880, ButtonH = 44;                    // 操作ボタン
+    const double ButtonY = 876, ButtonH = 44;                    // 操作ボタン（下段の y）
+    const double BarLeft = 620, BarRight = 925;                  // 操作ボタンを置く範囲（右隣の家の手牌に重ならない幅）
 
     static readonly string[] Honors = { "ji_e", "ji_s", "ji_w", "ji_n", "no", "ji_h", "ji_c" };
 
     readonly ViewerState S = new ViewerState();
     string error;
-    bool showOthers = true, playing;
+    bool showOthers = true, playing, showWall;
     double speed = 1;
     System.Threading.Timer timer;
     DotNetObjectReference<Viewer> self;
@@ -356,6 +359,78 @@
             <rect x="@F(x)" y="@F(y)" width="@F(BtnW(b.Label, h))" height="@F(h)" rx="8" />
             <text x="@F(x + BtnW(b.Label, h) / 2)" y="@F(y + h / 2)" style="font-size:@F(h * 0.42)px">@b.Label</text>
         </g>;
+
+    bool CanTsumogiri => S.Branching && S.Acts.DrawnOk && S.Acts.DrawnAction != null;
+
+    void TableClick()
+    {
+        if (CanTsumogiri) S.Acts.DrawnAction();
+    }
+
+    /// <summary>牌山：牌山データがあれば 136 枚を配牌・ツモ山・王牌に分けて、なければ牌譜のツモ順を表示する。</summary>
+    RenderFragment WallView(Step s) => __builder =>
+    {
+        var rd = S.RD;
+        <div class="wall-pop">
+            <div class="wall-hd">
+                <b>牌山</b><span class="@(rd.HasWall ? "wall-ok" : "wall-ng")">@rd.WallStatus</span>
+                <button @onclick="() => showWall = false">閉じる</button>
+            </div>
+            @if (rd.HasWall)
+            {
+                var dead = rd.Wall.Skip(WallAligner.Total - WallAligner.Dead).ToList();
+                <h4>配牌（@(rd.WallStart)枚）</h4>
+                <div class="wall-row">
+                    @foreach (var c in rd.Wall.Take(rd.WallStart))
+                    {
+                        <img src="@Url(c, false)" class="used" />
+                    }
+                </div>
+                <h4>ツモ山（@(rd.LW.Count)枚・ツモ済み @(s.Ld)枚）</h4>
+                <div class="wall-row">
+                    @for (int j = 0; j < rd.LW.Count; j++)
+                    {
+                        <img src="@Url(rd.LW[j], false)" class="@(j < s.Ld ? "used" : j == s.Ld ? "next" : null)" title="@(j + 1)枚目" />
+                    }
+                </div>
+                <h4>王牌（14枚）</h4>
+                <div class="wall-row">
+                    @for (int j = 0; j < dead.Count; j++)
+                    {
+                        int ri = rd.RinshanPos == null ? -1 : Array.IndexOf(rd.RinshanPos, j);
+                        <span class="dead">
+                            <img src="@Url(dead[j], false)" class="@(ri >= 0 && ri < s.Rd ? "used" : null)" />
+                            <small>@(ri >= 0 ? "嶺上" + (ri + 1) : "")</small>
+                        </span>
+                    }
+                </div>
+            }
+            else
+            {
+                <h4>牌譜のツモ順（@(rd.LW.Count)枚・ツモ済み @(s.Ld)枚）</h4>
+                <div class="wall-row">
+                    @for (int j = 0; j < rd.LW.Count; j++)
+                    {
+                        <img src="@Url(rd.LW[j], false)" class="@(j < s.Ld ? "used" : j == s.Ld ? "next" : null)" />
+                    }
+                </div>
+                <h4>嶺上ツモ（@(rd.RW.Count)枚）</h4>
+                <div class="wall-row">
+                    @for (int j = 0; j < rd.RW.Count; j++)
+                    {
+                        <img src="@Url(rd.RW[j], false)" class="@(j < s.Rd ? "used" : null)" />
+                    }
+                </div>
+            }
+            <h4>ドラ表示牌</h4>
+            <div class="wall-row">
+                @foreach (var c in S.Dora(s))
+                {
+                    <img src="@Url(c, false)" />
+                }
+            </div>
+        </div>
+    };
 
     void StartBranch()
     {
