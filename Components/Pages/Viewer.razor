@@ -275,6 +275,10 @@
                     }
                     <p class="hint-text">@A.Text</p>
                 </div>
+                <h3>シミュレーション</h3>
+                <div class="pad sim">
+                    @SimView(s, v)
+                </div>
                 <h3>状態</h3>
                 <div class="pad">
                     手番　@(s.T >= 0 ? ViewerState.Wn(s.T, s) : "―")<br />
@@ -316,6 +320,7 @@
             </section>
             <aside class="right">
                 <h3>分岐</h3>
+                <h3>シミュレーション</h3>
                 <h3>状態</h3>
                 <h3>ログ</h3>
                 <h3>局の結果</h3>
@@ -366,6 +371,7 @@
             scrolledTo = S.Cx;
             await JS.InvokeVoidAsync("paifu.scrollLog");
         }
+        if (S.Loaded) SimUpdate();
     }
 
     static string F(double d) { return d.ToString("0.##", CultureInfo.InvariantCulture); }
@@ -589,8 +595,313 @@
         StateHasChanged();
     });
 
+    // =====================================================================
+    // シミュレーション（局面が変わるたびに背景で計算し、結果を局面ごとに覚えておく）
+    // =====================================================================
+
+    static readonly string[] SimNames = { "自家和了", "放銃", "他家ツモ", "横移動", "流局" };
+    static readonly int[] SimTrialOpts = { 100, 300, 1000 };
+
+    bool simOn = true;
+    int simTrials = 300;
+    SimResult sim;
+    double simProg;
+    string simError;
+    Step simStep;                                   // sim を計算している局面
+    System.Threading.CancellationTokenSource simCts, trendCts;
+    double trendProg = -1;
+    // 計算済みの結果。視点・試行回数・局が変わったら捨てる
+    readonly Dictionary<Step, SimResult> simCache = new Dictionary<Step, SimResult>();
+    readonly Dictionary<Step, SimOutcome> trend = new Dictionary<Step, SimOutcome>();
+    (int v, int n, RoundData rd) simCacheKey;
+
+    static int[] Parts(SimOutcome o) => new[] { o.Win, o.DealIn, o.OtherTsumo, o.Yoko, o.Draw };
+
+    void SimReset()
+    {
+        simCts?.Cancel();
+        trendCts?.Cancel();
+        simCache.Clear();
+        trend.Clear();
+        sim = null;
+        simStep = null;
+        trendProg = -1;
+    }
+
+    /// <summary>表示中の局面の結果がなければ計算を始める（描画のたびに呼ぶ）。</summary>
+    void SimUpdate()
+    {
+        var key = (ViewQ, simTrials, S.RD);
+        if (!simCacheKey.Equals(key)) { SimReset(); simCacheKey = key; }
+        var step = S.Cs;
+        if (!simOn || ReferenceEquals(step, simStep)) return;
+        simCts?.Cancel();
+        simStep = step;
+        simError = null;
+        SimResult hit;
+        if (simCache.TryGetValue(step, out hit)) { sim = hit; simProg = 1; StateHasChanged(); return; }
+        sim = null;
+        simProg = 0;
+        var cts = simCts = new System.Threading.CancellationTokenSource();
+        var k = S.K;
+        int v = ViewQ, n = simTrials;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(150, cts.Token);   // 連続で移動している間は計算しない
+                var last = DateTime.MinValue;
+                var r = Simulator.Run(step, k, v, n, cts.Token, (p, part) =>
+                {
+                    if ((DateTime.Now - last).TotalMilliseconds < 300) return;
+                    last = DateTime.Now;
+                    _ = InvokeAsync(() => { if (cts == simCts) { sim = part; simProg = p; StateHasChanged(); } });
+                });
+                await InvokeAsync(() =>
+                {
+                    if (cts.IsCancellationRequested) return;
+                    simCache[step] = r;
+                    if (r.Overall.N > 0) trend[step] = r.Overall;
+                    if (cts == simCts) { sim = r; simProg = 1; }
+                    StateHasChanged();
+                });
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { await InvokeAsync(() => { simError = ex.Message; StateHasChanged(); }); }
+        });
+    }
+
+    /// <summary>局面列のすべての手について、全体の結果だけを計算して推移グラフを埋める。</summary>
+    void SimTrendAll()
+    {
+        trendCts?.Cancel();
+        var cts = trendCts = new System.Threading.CancellationTokenSource();
+        var log = S.Log.ToList();
+        var k = S.K;
+        int v = ViewQ, n = Math.Min(simTrials, 100);
+        trendProg = 0;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                for (int j = 0; j < log.Count; j++)
+                {
+                    var step = log[j];
+                    if (step.Ph == "e" || trend.ContainsKey(step)) continue;
+                    var r = Simulator.Run(step, k, v, n, cts.Token, overallOnly: true);
+                    int jj = j;
+                    await InvokeAsync(() =>
+                    {
+                        if (cts.IsCancellationRequested) return;
+                        if (!trend.ContainsKey(step)) trend[step] = r.Overall;
+                        trendProg = (jj + 1.0) / log.Count;
+                        StateHasChanged();
+                    });
+                }
+                await InvokeAsync(() => { if (cts == trendCts) { trendProg = -1; StateHasChanged(); } });
+            }
+            catch (OperationCanceledException) { }
+        });
+    }
+
+    void SimToggle()
+    {
+        simOn = !simOn;
+        if (!simOn) { simCts?.Cancel(); trendCts?.Cancel(); trendProg = -1; simStep = null; sim = null; }
+    }
+
+    static string Pct(double r) => (r * 100).ToString("0.0", CultureInfo.InvariantCulture) + "%";
+    static string Pts(double d) => (d >= 0 ? "+" : "") + Math.Round(d).ToString("N0");
+
+    /// <summary>結果の内訳を 100% 積み上げの横棒で描く。</summary>
+    RenderFragment SimBar(SimOutcome o, double h) => __builder =>
+    {
+        var ps = Parts(o);
+        double x = 0;
+        <svg class="sbar" viewBox="0 0 100 @F(h)" preserveAspectRatio="none" style="height:@F(h)px">
+            <rect class="sbar-bg" x="0" y="0" width="100" height="@F(h)" rx="3" />
+            @for (int i = 0; i < 5; i++)
+            {
+                double w = o.N == 0 ? 0 : 100.0 * ps[i] / o.N;
+                if (w > 0)
+                {
+                    <rect class="sv@(i)" x="@F(x)" y="0" width="@F(Math.Max(0, w - 0.6))" height="@F(h)"><title>@SimNames[i] @Pct(o.Rate(ps[i]))（@ps[i] / @o.N 回）</title></rect>
+                }
+                x += w;
+            }
+        </svg>
+    };
+
+    /// <summary>このあとの局面で牌譜どおりに視点の家が切った牌（候補の印に使う）。</summary>
+    int ActualCand(Step s, int v)
+    {
+        if (sim == null || S.Cx + 1 >= S.Count || s.Ph != "d" || s.T != v) return -1;
+        var nx = S.Log[S.Cx + 1];
+        if (nx.Ph != "c" || nx.T != v || nx.Pl[v].Rv.Count == 0) return -1;
+        var r = nx.Pl[v].Rv.Last();
+        return sim.Cands.FindIndex(c => c.Tile == r.C && c.Label.StartsWith("立直") == r.R && c.Label != "ツモ和了");
+    }
+
+    RenderFragment SimView(Step s, int v) => __builder =>
+    {
+        <div class="sim-ctl">
+            <button class="@(simOn ? "on" : null)" @onclick="SimToggle">@(simOn ? "計算中止" : "計算する")</button>
+            <label>試行
+                <select value="@simTrials" @onchange="e => simTrials = int.Parse((string)e.Value)">
+                    @foreach (var n in SimTrialOpts)
+                    {
+                        <option value="@n">@n 回</option>
+                    }
+                </select>
+            </label>
+            <button disabled="@(!simOn)" @onclick="SimTrendAll">全手の推移</button>
+        </div>
+        <p class="sim-sub">@(S.Nmq(v)) の視点。見えない牌を毎回並べ替え、4 人とも簡単なボットで局の終わりまで打った結果です。</p>
+        @if (!simOn)
+        {
+            <p class="sim-sub">計算は止めています。</p>
+            return;
+        }
+        @if (simError != null)
+        {
+            <p class="note">計算できませんでした：@simError</p>
+        }
+        <div class="sim-leg">
+            @for (int i = 0; i < 5; i++)
+            {
+                <span><i class="sw sv@(i)"></i>@SimNames[i]</span>
+            }
+        </div>
+        @if (s.Ph == "e")
+        {
+            <p class="sim-sub">局終了：@ViewerState.FirstLine(s.Msg)</p>
+        }
+        else if (sim == null || sim.Overall.N == 0)
+        {
+            <p class="sim-sub">計算中…</p>
+        }
+        else
+        {
+            var o = sim.Overall;
+            <div class="sim-head">
+                <b>この局面から</b>
+                <span>@(simProg < 1 ? "計算中 " + Pct(simProg) : o.N + " 回")</span>
+            </div>
+            @SimBar(o, 22)
+            <div class="sim-nums">
+                和了 <b>@Pct(o.WinRate)</b>　放銃 <b>@Pct(o.DealInRate)</b>　流局 <b>@Pct(o.DrawRate)</b>　収支 <b>@Pts(o.MeanDelta)</b>
+            </div>
+            @if (sim.Cands.Count > 0)
+            {
+                int actual = ActualCand(s, v);
+                var order = Enumerable.Range(0, sim.Cands.Count).OrderByDescending(i => sim.Cands[i].R.MeanDelta).ToList();
+                <div class="sim-head"><b>操作ごとの比較</b><span>平均収支の高い順</span></div>
+                <table class="sim-tbl">
+                    <thead><tr><th>操作</th><th></th><th>和了</th><th>放銃</th><th>流局</th><th>収支</th></tr></thead>
+                    <tbody>
+                        @foreach (int i in order)
+                        {
+                            var c = sim.Cands[i];
+                            <tr class="@(i == order[0] ? "best" : null)">
+                                <td class="op">
+                                    @if (c.Tile.HasValue)
+                                    {
+                                        <img src="@Url(c.Tile.Value, false)" />
+                                    }
+                                    <span>@c.Label@(i == actual ? "（牌譜）" : "")</span>
+                                </td>
+                                <td class="bar">@SimBar(c.R, 12)</td>
+                                <td>@Pct(c.R.WinRate)</td>
+                                <td>@Pct(c.R.DealInRate)</td>
+                                <td>@Pct(c.R.DrawRate)</td>
+                                <td>@Pts(c.R.MeanDelta)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        }
+        @SimTrend(v)
+    };
+
+    // 推移グラフの寸法（仮想座標）と線
+    const double GW = 300, GH = 130, GL = 30, GR = 6, GT = 8, GB = 20;
+    static readonly double[] GridLines = { 0, 0.25, 0.5, 0.75, 1 };
+    static string GridLabel(double g) => (g * 100).ToString("0") + "%";
+    static readonly (string name, string cls, Func<SimOutcome, double> f)[] TrendLines =
+    {
+        ("和了率", "sv0", o => o.WinRate), ("放銃率", "sv1", o => o.DealInRate), ("流局率", "sv4", o => o.DrawRate)
+    };
+
+    double GX(int j) => GL + (GW - GL - GR) * (S.Log.Count <= 1 ? 0 : (double)j / (S.Log.Count - 1));
+    static double GY(double r) => GT + (GH - GT - GB) * (1 - r);
+
+    List<(int j, SimOutcome o)> TrendPoints()
+    {
+        var o = new List<(int j, SimOutcome o)>();
+        for (int j = 0; j < S.Log.Count; j++)
+        {
+            SimOutcome x;
+            if (trend.TryGetValue(S.Log[j], out x)) o.Add((j, x));
+        }
+        return o;
+    }
+
+    string Poly(List<(int j, SimOutcome o)> pts, Func<SimOutcome, double> f) =>
+        string.Join(" ", pts.Select(p => F(GX(p.j)) + "," + F(GY(f(p.o)))));
+
+    /// <summary>局面列に沿った和了率・放銃率・流局率の推移（計算済みの手だけ点を打つ）。</summary>
+    RenderFragment SimTrend(int v) => __builder =>
+    {
+        var log = S.Log;
+        var pts = TrendPoints();
+        double W = GW, H = GH, L = GL, R = GR, T = GT, B = GB;
+        var lines = TrendLines;
+        <div class="sim-head">
+            <b>局面ごとの推移</b>
+            <span>@(trendProg >= 0 ? "計算中 " + Pct(trendProg) : pts.Count + " / " + log.Count + " 手")</span>
+        </div>
+        <div class="sim-leg">
+            @foreach (var ln in lines)
+            {
+                <span><i class="sw ln @ln.cls"></i>@ln.name</span>
+            }
+        </div>
+        <svg class="strend" viewBox="0 0 @F(W) @F(H)">
+            @foreach (double g in GridLines)
+            {
+                <g>
+                    <line class="grid" x1="@F(L)" x2="@F(W - R)" y1="@F(GY(g))" y2="@F(GY(g))" />
+                    <text class="ax" x="@F(L - 4)" y="@F(GY(g))">@GridLabel(g)</text>
+                </g>
+            }
+            <text class="ax mid" x="@F((L + W - R) / 2)" y="@F(H - 4)">手（局面）</text>
+            <line class="cur" x1="@F(GX(S.Cx))" x2="@F(GX(S.Cx))" y1="@F(T)" y2="@F(H - B)" />
+            @foreach (var ln in lines)
+            {
+                if (pts.Count >= 2)
+                {
+                    <polyline class="tl @ln.cls" points="@Poly(pts, ln.f)" />
+                }
+                foreach (var p in pts)
+                {
+                    <circle class="td @ln.cls" cx="@F(GX(p.j))" cy="@F(GY(ln.f(p.o)))" r="2.5" />
+                }
+            }
+            @foreach (var p in pts)
+            {
+                int jj = p.j;
+                <rect class="hit" x="@F(GX(p.j) - 3)" y="@F(T)" width="6" height="@F(H - T - B)" @onclick="() => S.Go(jj)">
+                    <title>@(log[p.j].Jn)巡目 @ViewerState.FirstLine(log[p.j].Msg)　和了 @Pct(p.o.WinRate)　放銃 @Pct(p.o.DealInRate)　流局 @Pct(p.o.DrawRate)</title>
+                </rect>
+            }
+        </svg>
+    };
+
     public void Dispose()
     {
+        simCts?.Cancel();
+        trendCts?.Cancel();
         timer?.Dispose();
         self?.Dispose();
     }
