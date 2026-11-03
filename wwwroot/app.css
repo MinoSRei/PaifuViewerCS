@@ -69,11 +69,11 @@ svg.board text { font-family: "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", s
 /* 卓クリック（ツモ切り）を妨げないよう、操作できない表示物はクリックを素通しする */
 svg.board text, svg.board .cbox, svg.board .tag-on, svg.board .back, svg.board .tile:not(.clk) { pointer-events: none; }
 .cbox { fill: var(--box); stroke: var(--line); stroke-width: 2; }
-.cname { font-size: 20px; font-weight: 700; fill: var(--fg); }
-.cinfo { font-size: 15px; fill: var(--fg); }
+.cname { font-size: 23px; font-weight: 700; fill: var(--fg); }
+.cinfo { font-size: 17px; fill: var(--fg); }
 .tag-on { fill: var(--acc-soft); }
-.tag1 { font-size: 14px; fill: var(--fg); }
-.tag2 { font-size: 15px; font-weight: 700; fill: var(--fg); }
+.tag1 { font-size: 15px; fill: var(--fg); }
+.tag2 { font-size: 16px; font-weight: 700; fill: var(--fg); }
 .tag1.on, .tag2.on { fill: var(--acc); font-weight: 700; }
 .back { fill: var(--back); stroke: var(--back-edge); stroke-width: 1.5; }
 

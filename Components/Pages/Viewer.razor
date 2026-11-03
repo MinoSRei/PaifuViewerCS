@@ -94,18 +94,18 @@
                     <rect class="table @(TableClickable ? "clk" : null)" x="2" y="2" width="996" height="996" rx="18" @onclick="TableClick" />
 
                     @* 卓中央：局名・ドラ・供託・残り枚数 *@
-                    <rect class="cbox" x="380" y="380" width="240" height="240" rx="10" />
-                    <text class="cname" x="500" y="442">@S.RoundName</text>
+                    <rect class="cbox" x="@F(500 - CB)" y="@F(500 - CB)" width="@F(2 * CB)" height="@F(2 * CB)" rx="10" />
+                    <text class="cname" x="500" y="435">@S.RoundName</text>
                     @{
                         var dora = S.Dora(s);
-                        double dx = 500 - dora.Count * 30 / 2.0;
+                        double dx = 500 - dora.Count * 36 / 2.0;
                     }
                     @foreach (var c in dora)
                     {
-                        @Img(c, dx, 458, 28, 37)
-                        dx += 30;
+                        @Img(c, dx, 452, 34, 45)
+                        dx += 36;
                     }
-                    <text class="cinfo" x="500" y="509">供託 @S.Kyotaku(s).ToString("N0")　残り @(s.Wall)枚</text>
+                    <text class="cinfo" x="500" y="522">供託 @S.Kyotaku(s).ToString("N0")　残り @(s.Wall)枚</text>
 
                     @* 各家（自分の席を下にして描き、回転させる）*@
                     @for (int q0 = 0; q0 < 4; q0++)
@@ -118,10 +118,10 @@
                             @* 名札 *@
                             @if (turn)
                             {
-                                <rect class="tag-on" x="386" y="576" width="228" height="40" rx="6" />
+                                <rect class="tag-on" x="386" y="@F(500 + CB - 44)" width="228" height="40" rx="6" />
                             }
-                            <text class="tag1 @(turn ? "on" : null)" x="500" y="587">@ViewerState.Wn(q, s)　@S.Nmq(q)</text>
-                            <text class="tag2 @(turn ? "on" : null)" x="500" y="606">@s.Sc[q].ToString("N0")@(p.Ri ? "　立直" : "")</text>
+                            <text class="tag1 @(turn ? "on" : null)" x="500" y="@F(500 + CB - 33)">@ViewerState.Wn(q, s)　@S.Nmq(q)</text>
+                            <text class="tag2 @(turn ? "on" : null)" x="500" y="@F(500 + CB - 14)">@s.Sc[q].ToString("N0")@(p.Ri ? "　立直" : "")</text>
 
                             @* 河（6 枚ごとに改行、立直宣言牌は横向き）*@
                             @{
@@ -334,9 +334,12 @@
 @code {
     // ---- 卓の寸法（仮想座標 1000×1000）----
     const double HandX = 90, HandY = 926, TW = 46, TH = 62;      // 手牌（副露 1 つで下家の手牌の手前まで届く大きさ）
-    const double RiverX = 390, RiverY = 630, RW = 34, RH = 46;   // 河
+    // 卓中央の箱（中心から CB の正方形）と河。河は箱の辺に沿って風車状に並べるので、
+    // 1 段の幅（6 枚 ＋ 立直の横向き分）が箱の一辺 2*CB を超えないようにする
+    const double CB = 140;
+    const double RiverX = 500 - CB + 10, RiverY = 500 + CB + 10, RW = 40, RH = 54;   // 河
     const double ButtonY = 868, ButtonH = 44;                    // 操作ボタン（下段の y。持ち上げた手牌に重ならない高さ）
-    const double BarLeft = 620, BarRight = 925;                  // 操作ボタンを置く範囲（右隣の家の手牌に重ならない幅）
+    const double BarLeft = 640, BarRight = 925;                  // 操作ボタンを置く範囲（自分の河と右隣の家の手牌に重ならない幅）
 
     static readonly string[] Honors = { "ji_e", "ji_s", "ji_w", "ji_n", "no", "ji_h", "ji_c" };
     static readonly string[] Rel = { "自家", "下家", "対面", "上家" };   // 視点から見た相対位置
