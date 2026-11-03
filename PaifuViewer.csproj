@@ -6,6 +6,8 @@
     <AssemblyName>PaifuViewer</AssemblyName>
     <Nullable>disable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- ブラウザ版（Wasm フォルダ）は別プロジェクト -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);Wasm\**</DefaultItemExcludes>
   </PropertyGroup>
 
 </Project>

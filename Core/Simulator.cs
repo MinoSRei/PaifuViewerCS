@@ -54,12 +54,10 @@ namespace PaifuViewer
         /// </summary>
         public static SimResult Run(Step s, List<object> k, int viewer, int trials, CancellationToken ct, Action<double, SimResult> progress = null, bool overallOnly = false)
         {
-            var setup = new SimSetup(s.Clone(), k, viewer);
-            var res = new SimResult { Viewer = viewer };
-            if (s.Ph == "e") { res.Note = "局終了"; res.Done = true; return res; }
-            if (!overallOnly) res.Cands = Candidates(setup);
-            var jobs = new List<KeyValuePair<SimOutcome, Action<SimGame>>> { new KeyValuePair<SimOutcome, Action<SimGame>>(res.Overall, null) };
-            jobs.AddRange(res.Cands.Select(c => new KeyValuePair<SimOutcome, Action<SimGame>>(c.R, c.Act)));
+            SimSetup setup;
+            List<KeyValuePair<SimOutcome, Action<SimGame>>> jobs;
+            var res = Prepare(s, k, viewer, overallOnly, out setup, out jobs);
+            if (res.Done) return res;
 
             // 途中経過を見せるため、少しずつ全候補を回す
             const int chunk = 50;
@@ -84,6 +82,55 @@ namespace PaifuViewer
                 if (progress != null) progress((double)done / total, res);
             }
             res.Done = true;
+            return res;
+        }
+
+        /// <summary>
+        /// Run と同じ試行を 1 本のスレッドで少しずつ行い、およそ sliceMs ごとに await で処理を返す。
+        /// ブラウザ（WebAssembly）では裏で計算するスレッドがないため、こうして画面が固まらないようにする。
+        /// </summary>
+        public static async Task<SimResult> RunAsync(Step s, List<object> k, int viewer, int trials, CancellationToken ct, Action<double, SimResult> progress = null, bool overallOnly = false, int sliceMs = 25)
+        {
+            SimSetup setup;
+            List<KeyValuePair<SimOutcome, Action<SimGame>>> jobs;
+            var res = Prepare(s, k, viewer, overallOnly, out setup, out jobs);
+            if (res.Done) return res;
+
+            var rnd = new Random(Guid.NewGuid().GetHashCode());
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            const int chunk = 50;
+            int total = trials * jobs.Count, done = 0;
+            for (int start = 0; start < trials; start += chunk)
+            {
+                int n = Math.Min(chunk, trials - start);
+                foreach (var job in jobs)
+                    for (int j = 0; j < n; j++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var g = new SimGame(setup, rnd);
+                        g.Play(job.Value);
+                        job.Key.Add(g.Result);
+                        done++;
+                        if (sw.ElapsedMilliseconds < sliceMs) continue;
+                        if (progress != null) progress((double)done / total, res);
+                        await Task.Delay(1, ct);
+                        sw.Restart();
+                    }
+            }
+            res.Done = true;
+            if (progress != null) progress(1, res);
+            return res;
+        }
+
+        static SimResult Prepare(Step s, List<object> k, int viewer, bool overallOnly, out SimSetup setup, out List<KeyValuePair<SimOutcome, Action<SimGame>>> jobs)
+        {
+            setup = new SimSetup(s.Clone(), k, viewer);
+            var res = new SimResult { Viewer = viewer };
+            jobs = null;
+            if (s.Ph == "e") { res.Note = "局終了"; res.Done = true; return res; }
+            if (!overallOnly) res.Cands = Candidates(setup);
+            jobs = new List<KeyValuePair<SimOutcome, Action<SimGame>>> { new KeyValuePair<SimOutcome, Action<SimGame>>(res.Overall, null) };
+            jobs.AddRange(res.Cands.Select(c => new KeyValuePair<SimOutcome, Action<SimGame>>(c.R, c.Act)));
             return res;
         }
 

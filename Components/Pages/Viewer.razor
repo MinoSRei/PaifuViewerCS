@@ -600,10 +600,11 @@
     // =====================================================================
 
     static readonly string[] SimNames = { "自家和了", "放銃", "他家ツモ", "横移動", "流局" };
-    static readonly int[] SimTrialOpts = { 100, 300, 1000 };
+    // ブラウザ（WebAssembly）は 1 スレッドで計算するため、試行回数を少なめにする
+    static readonly int[] SimTrialOpts = OperatingSystem.IsBrowser() ? new[] { 30, 100, 300 } : new[] { 100, 300, 1000 };
 
     bool simOn = true;
-    int simTrials = 300;
+    int simTrials = OperatingSystem.IsBrowser() ? 100 : 300;
     SimResult sim;
     double simProg;
     string simError;
@@ -651,7 +652,7 @@
             {
                 await Task.Delay(150, cts.Token);   // 連続で移動している間は計算しない
                 var last = DateTime.MinValue;
-                var r = Simulator.Run(step, k, v, n, cts.Token, (p, part) =>
+                var r = await RunSim(step, k, v, n, cts.Token, (p, part) =>
                 {
                     if ((DateTime.Now - last).TotalMilliseconds < 300) return;
                     last = DateTime.Now;
@@ -671,6 +672,16 @@
         });
     }
 
+    /// <summary>
+    /// シミュレーションを実行する。サーバーでは複数コアで並列に、ブラウザ（WebAssembly）では
+    /// 画面が固まらないよう 1 本のスレッドで少しずつ処理を返しながら計算する。
+    /// </summary>
+    static Task<SimResult> RunSim(Step step, List<object> k, int v, int n, System.Threading.CancellationToken ct, Action<double, SimResult> progress = null, bool overallOnly = false)
+    {
+        if (OperatingSystem.IsBrowser()) return Simulator.RunAsync(step, k, v, n, ct, progress, overallOnly);
+        return Task.Run(() => Simulator.Run(step, k, v, n, ct, progress, overallOnly), ct);
+    }
+
     /// <summary>局面列のすべての手について、全体の結果だけを計算して推移グラフを埋める。</summary>
     void SimTrendAll()
     {
@@ -688,7 +699,7 @@
                 {
                     var step = log[j];
                     if (step.Ph == "e" || trend.ContainsKey(step)) continue;
-                    var r = Simulator.Run(step, k, v, n, cts.Token, overallOnly: true);
+                    var r = await RunSim(step, k, v, n, cts.Token, overallOnly: true);
                     int jj = j;
                     await InvokeAsync(() =>
                     {

@@ -14,6 +14,34 @@ dotnet run
 
 ブラウザで http://localhost:5080 を開きます（Visual Studio で `PaifuViewer.csproj` を開いて実行することもできます）。
 
+## ブラウザ版（Blazor WebAssembly、`Wasm/`）
+
+サーバーなしでブラウザだけで動く版です。GitHub Pages などの静的ホスティングに置けます。
+牌譜の処理（`Core/`）・画面（`Components/Pages/Viewer.razor`）・CSS/JS・牌画像はサーバー版のファイルをそのまま共有しているので、
+どちらかを直せば両方に反映されます。読み込んだ牌譜はブラウザの外に送られません。
+
+```bat
+dotnet publish Wasm/PaifuEditor.Wasm.csproj -c Release -o publish
+```
+
+`publish/wwwroot` の中身を静的ホスティングに置きます（サブフォルダに置く場合は `index.html` の `<base href="/" />` をそのパスに変えます）。
+
+### GitHub Pages への自動発行
+
+`.github/workflows/pages.yml` が、main に push するたびにブラウザ版を発行して GitHub Pages に置きます。最初に一度だけ次の設定が必要です。
+
+1. リポジトリを公開（public）にする（無料プランで GitHub Pages を使う場合）
+2. GitHub のリポジトリの Settings → Pages → Build and deployment の Source を「GitHub Actions」にする
+
+発行後は `https://<ユーザー名>.github.io/<リポジトリ名>/` で開けます。
+
+### サーバー版との違い
+
+- 初回はブラウザ用の .NET 一式をダウンロードするため、表示まで数秒かかります（2 回目以降はキャッシュされます）
+- シミュレーションは 1 本のスレッドで、画面を止めないよう少しずつ計算します。サーバー版より時間がかかるため、
+  試行回数の選択肢を 30 / 100 / 300 回（既定 100 回）にしています。GitHub Pages 版は AOT コンパイルで高速化しています
+- ボットの自動対戦（`--selfplay`）はサーバー版のプロジェクトでのみ使えます
+
 ## 画面
 
 - 左：局一覧・局情報・巡目選択（配牌／鳴き／リーチ／和了へのジャンプ）・再生
@@ -123,6 +151,8 @@ dotnet run -- --selfplay 4000 PushHan1=2.5 DamaValue=7700
 | `Core/Json.cs` | JSON パーサ |
 | `wwwroot/app.css`, `app.js` | 見た目（ライト／ダーク対応）、キー操作・ドラッグ＆ドロップ |
 | `wwwroot/tiles/` | 牌画像（麻雀王国） |
+| `Wasm/` | ブラウザ版（Blazor WebAssembly）。`Program.cs`・`App.razor`・`wwwroot/index.html` 以外はサーバー版のファイルを共有 |
+| `.github/workflows/pages.yml` | ブラウザ版を GitHub Pages に発行する GitHub Actions |
 
 ## 牌画像
 
