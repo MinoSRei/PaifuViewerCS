@@ -75,6 +75,8 @@ namespace PaifuViewer
         public List<int> Wall;    // 牌山 136 枚（ツモ順に並べ替え済み。牌山データがなければ null）
         public int WallStart;     // Wall のうち最初の通常ツモの位置（それより前は配牌）
         public int[] RinshanPos;  // 王牌（Wall の末尾 14 枚）のうち嶺上牌の位置。推定できなければ null
+        public int[] DoraPos, UraPos;        // 王牌のうちドラ表示牌・裏ドラ表示牌の位置（牌山と照合できたときのみ）
+        public List<int> DoraInd, UraInd;    // 牌山から読んだドラ表示牌・裏ドラ表示牌（カンで増える分まで 5 枚ずつ）
         public string WallStatus = "牌山データなし";
     }
 }

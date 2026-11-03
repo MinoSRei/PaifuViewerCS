@@ -23,6 +23,7 @@ namespace PaifuViewer
         public int Han, Fu, Yakuman, Base;
         public string Limit = "";
         public bool UraUnknown;
+        public List<int> UraShown;      // めくった裏ドラ表示牌（リーチ和了で裏ドラがわかっている場合）
 
         public string YakuText()
         {
@@ -314,7 +315,8 @@ namespace PaifuViewer
             r.UraUnknown = (w.Riichi || w.DoubleRiichi) && w.UraInd == null;
             if (dora > 0) Y(r, "ドラ", dora);
             if (aka > 0) Y(r, "赤ドラ", aka);
-            if (ura > 0) Y(r, "裏ドラ", ura);
+            // 裏ドラはリーチ和了で表示牌がわかっていれば 0 枚でも載せる（めくって確認したことがわかるように）
+            if ((w.Riichi || w.DoubleRiichi) && w.UraInd != null) { Y(r, "裏ドラ", ura); r.UraShown = w.UraInd; }
             r.Han = r.Yaku.Sum(y => y.Value);
             int b = r.Fu * (1 << (2 + Math.Min(r.Han, 20)));
             if (r.Han >= 13) { r.Base = 8000; r.Limit = "数え役満"; }

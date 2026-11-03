@@ -170,7 +170,8 @@ namespace PaifuViewer
         }
 
         public string RoundName { get { return Rname(K); } }
-        public List<int> Dora(Step s) { return J.Ints(K[2]).Take(s.Dn).ToList(); }
+        /// <summary>めくれているドラ表示牌。牌山があれば分岐で増えたカンドラも牌山から読む。</summary>
+        public List<int> Dora(Step s) { return (RD.DoraInd ?? J.Ints(K[2])).Take(s.Dn).ToList(); }
         public int Kyotaku(Step s) { return (J.I(J.L(K[0])[2]) + s.Pl.Count(p => p.Ri)) * 1000; }
         public static string FirstLine(string m) { return m.Split('\n')[0]; }
 
@@ -370,7 +371,8 @@ namespace PaifuViewer
                 Rinshan = tsumo && s.Rs,
                 DoraInd = Dora(s)
             };
-            var ura = J.Ints(K[3]);
+            // 裏ドラ：牌山があれば牌山から、なければ牌譜の記録（その局でリーチ和了があった場合のみ）から
+            var ura = RD.UraInd ?? J.Ints(K[3]);
             w.UraInd = ura.Count >= s.Dn ? ura.Take(s.Dn).ToList() : null;
 
             bool noCalls = s.Pl.All(p => p.Ml.Count == 0);
@@ -429,6 +431,7 @@ namespace PaifuViewer
             var d = Scoring.Deltas(r, q, from, s.Dealer, Honba, Kyotaku(s), out pay);
             string head = N(q) + (q == from ? " ツモ和了" : " ロン和了（" + N(from) + "から）");
             var n = Nx(head + " " + r.HanFu() + " " + pay + "\n" + r.YakuText()
+                + (r.UraShown != null ? "\n裏ドラ表示牌：" + string.Join(" ", r.UraShown.Select(Tiles.Tn)) : "")
                 + (r.UraUnknown ? "\n※裏ドラは牌譜に記録がないため含めていません" : "")
                 + "\n" + DeltaText(d), -1, "e");
             for (int k = 0; k < 4; k++) n.Sc[k] += d[k];

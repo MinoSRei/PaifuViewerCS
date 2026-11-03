@@ -55,7 +55,7 @@ namespace PaifuViewer
             b.Run(k);
             foreach (var s in b.S) s.Jn = s.CalcJn();
             var rd = new RoundData { Steps = b.S, LW = b.LW, RW = b.RW };
-            WallAligner.Apply(rd, paishan);
+            WallAligner.Apply(rd, paishan, b.dora, J.Ints(k[3]));
             return rd;
         }
 

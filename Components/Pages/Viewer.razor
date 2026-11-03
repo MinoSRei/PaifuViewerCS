@@ -75,7 +75,7 @@
                 </div>
                 <h3>再生</h3>
                 <div class="pad play">
-                    <button @onclick="() => S.Go(S.Cx - 1)">◀</button>
+                    <button @onclick="() => S.Go(S.Cx - 1)">|◀</button>
                     <button @onclick="() => Play(!playing)">@(playing ? "⏸" : "▶")</button>
                     <button @onclick="() => S.Go(S.Cx + 1)">▶|</button>
                     <select value="@speed.ToString(CultureInfo.InvariantCulture)" @onchange="SetSpeed">
@@ -333,9 +333,9 @@
 
 @code {
     // ---- 卓の寸法（仮想座標 1000×1000）----
-    const double HandX = 90, HandY = 934, TW = 40, TH = 54;      // 手牌
+    const double HandX = 90, HandY = 926, TW = 46, TH = 62;      // 手牌（副露 1 つで下家の手牌の手前まで届く大きさ）
     const double RiverX = 390, RiverY = 630, RW = 34, RH = 46;   // 河
-    const double ButtonY = 876, ButtonH = 44;                    // 操作ボタン（下段の y）
+    const double ButtonY = 868, ButtonH = 44;                    // 操作ボタン（下段の y。持ち上げた手牌に重ならない高さ）
     const double BarLeft = 620, BarRight = 925;                  // 操作ボタンを置く範囲（右隣の家の手牌に重ならない幅）
 
     static readonly string[] Honors = { "ji_e", "ji_s", "ji_w", "ji_n", "no", "ji_h", "ji_c" };
@@ -504,9 +504,11 @@
                     @for (int j = 0; j < dead.Count; j++)
                     {
                         int ri = rd.RinshanPos == null ? -1 : Array.IndexOf(rd.RinshanPos, j);
+                        int di = rd.DoraPos == null ? -1 : Array.IndexOf(rd.DoraPos, j);
+                        int ui = rd.UraPos == null ? -1 : Array.IndexOf(rd.UraPos, j);
                         <span class="dead">
-                            <img src="@Url(dead[j], false)" class="@(ri >= 0 && ri < s.Rd ? "used" : null)" />
-                            <small>@(ri >= 0 ? "嶺上" + (ri + 1) : "")</small>
+                            <img src="@Url(dead[j], false)" class="@(ri >= 0 && ri < s.Rd ? "used" : di >= 0 && di < s.Dn ? "next" : null)" />
+                            <small>@(ri >= 0 ? "嶺上" + (ri + 1) : di >= 0 ? "ドラ" + (di + 1) : ui >= 0 ? "裏" + (ui + 1) : "")</small>
                         </span>
                     }
                 </div>
