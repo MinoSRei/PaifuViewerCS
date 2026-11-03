@@ -620,6 +620,9 @@
     readonly Dictionary<Step, SimResult> simCache = new Dictionary<Step, SimResult>();
     readonly Dictionary<Step, SimOutcome> trend = new Dictionary<Step, SimOutcome>();
     (int v, int n, RoundData rd) simCacheKey;
+    // 牌譜どおりに打った結果（候補ごとに 1 回）。牌山データがない局・分岐中は null
+    List<ReplayOutcome> replay;
+    readonly Dictionary<Step, List<ReplayOutcome>> replayCache = new Dictionary<Step, List<ReplayOutcome>>();
 
     static int[] Parts(SimOutcome o) => new[] { o.Win, o.DealIn, o.OtherTsumo, o.Yoko, o.Draw };
 
@@ -629,6 +632,8 @@
         trendCts?.Cancel();
         simCache.Clear();
         trend.Clear();
+        replayCache.Clear();
+        replay = null;
         sim = null;
         simStep = null;
         trendProg = -1;
@@ -645,17 +650,35 @@
         simStep = step;
         simError = null;
         SimResult hit;
-        if (simCache.TryGetValue(step, out hit)) { sim = hit; simProg = 1; StateHasChanged(); return; }
+        if (simCache.TryGetValue(step, out hit)) { sim = hit; simProg = 1; replay = replayCache.GetValueOrDefault(step); StateHasChanged(); return; }
         sim = null;
+        replay = null;
         simProg = 0;
         var cts = simCts = new System.Threading.CancellationTokenSource();
         var k = S.K;
         int v = ViewQ, n = simTrials;
+        // 牌譜どおりの結果は、牌譜を閲覧中（分岐していない）で牌山データがある局のみ
+        bool canReplay = !S.Branching && S.RD.HasWall;
+        var log = S.Steps;
+        var rd = S.RD;
+        int idx = S.I;
         _ = Task.Run(async () =>
         {
             try
             {
                 await Task.Delay(150, cts.Token);   // 連続で移動している間は計算しない
+                if (canReplay)
+                {
+                    var rp = OperatingSystem.IsBrowser()
+                        ? await Simulator.ReplayAsync(step, k, v, rd, log, idx, cts.Token, true)
+                        : await Task.Run(() => Simulator.ReplayAsync(step, k, v, rd, log, idx, cts.Token, false), cts.Token);
+                    await InvokeAsync(() =>
+                    {
+                        if (cts.IsCancellationRequested) return;
+                        replayCache[step] = rp;
+                        if (cts == simCts) { replay = rp; StateHasChanged(); }
+                    });
+                }
                 var last = DateTime.MinValue;
                 var r = await RunSim(step, k, v, n, cts.Token, (p, part) =>
                 {
@@ -727,6 +750,20 @@
     }
 
     static string Pct(double r) => (r * 100).ToString("0.0", CultureInfo.InvariantCulture) + "%";
+
+    /// <summary>牌譜どおりの結果の短い説明（例：自家ツモ +3,900（4巡後）、放銃→対面 -8,000（2巡後））。</summary>
+    static string ReplayText(ReplayOutcome o, int v)
+    {
+        Func<int, string> who = q => q < 0 ? "?" : Rel[(q - v + 4) % 4];
+        var r = o.R;
+        int win = o.Winners.Count > 0 ? o.Winners[0] : -1;
+        string what = r.Win > 0 ? (o.From == v ? "自家ツモ" : "自家ロン")
+            : r.DealIn > 0 ? "放銃→" + who(win)
+            : r.OtherTsumo > 0 ? who(win) + "ツモ"
+            : r.Yoko > 0 ? who(win) + "ロン（" + who(o.From) + "）"
+            : "流局";
+        return what + " " + Pts(r.Delta) + "（" + o.Turns + "巡後）" + (o.LeftScript ? "＊" : "");
+    }
     static string Pts(double d) => (d >= 0 ? "+" : "") + Math.Round(d).ToString("N0");
 
     /// <summary>結果の内訳を 100% 積み上げの横棒で描く。</summary>
@@ -832,9 +869,32 @@
                                 <td>@Pct(c.R.DrawRate)</td>
                                 <td>@Pts(c.R.MeanDelta)</td>
                             </tr>
+                            @if (replay != null)
+                            {
+                                @* 牌譜どおりの結果は列に入りきらないので、操作の下の行に出す *@
+                                var ro = replay.FirstOrDefault(x => x.Label == c.Label);
+                                <tr class="rp-row">
+                                    <td colspan="6" class="rp @(ro == null ? null : ro.R.Delta > 0 ? "plus" : ro.R.Delta < 0 ? "minus" : null)"
+                                        title="@(ro != null && ro.LeftScript ? "途中で牌譜の流れから外れたため、そこからは全員ボットで打った結果" : null)">牌譜どおり → @(ro == null ? "―" : ReplayText(ro, v))</td>
+                                </tr>
+                            }
                         }
                     </tbody>
                 </table>
+                <p class="sim-sub">
+                    @if (replay != null)
+                    {
+                        @:牌譜どおり：実際の牌山・他家の手牌で、他家は牌譜の打牌・鳴き・和了のとおりに、自家はこの操作のあと牌譜から外れたらボットで打った結果（＊は途中から牌譜の流れを外れ、全員ボットで打った結果）。
+                    }
+                    else if (S.Branching)
+                    {
+                        @:分岐中は牌譜どおりの結果は出せません。
+                    }
+                    else if (!S.RD.HasWall)
+                    {
+                        @:牌譜どおりの結果は、牌山データがある局で表示します。
+                    }
+                </p>
             }
         }
         @SimTrend(v)

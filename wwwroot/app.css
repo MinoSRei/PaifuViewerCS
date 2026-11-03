@@ -154,6 +154,10 @@ svg.board text, svg.board .cbox, svg.board .tag-on, svg.board .back, svg.board .
 .sim-tbl td.op img { width: 16px; height: 21px; }
 .sim-tbl td.bar { width: 60px; min-width: 40px; }
 .sim-tbl tr.best td { font-weight: 700; }
+.sim-tbl tr.rp-row td { border-top: 0; padding-top: 0; }
+.sim-tbl td.rp { text-align: left; font-size: 11px; font-weight: 400; padding-left: 24px; color: var(--muted); }
+.sim-tbl td.rp.plus { color: var(--acc); }
+.sim-tbl td.rp.minus { color: var(--note); }
 .strend { width: 100%; display: block; }
 .strend .grid { stroke: var(--line); stroke-width: .5; }
 .strend .ax { font-size: 9px; fill: var(--muted); text-anchor: end; dominant-baseline: central; }

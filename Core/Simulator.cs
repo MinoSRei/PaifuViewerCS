@@ -33,6 +33,16 @@ namespace PaifuViewer
         internal Action<SimGame> Act;
     }
 
+    /// <summary>牌譜どおりに打った結果。Winners・From は SimGame と同じ（ロンなら From が放銃者、ツモなら和了者）。</summary>
+    public class ReplayOutcome
+    {
+        public string Label;
+        public SimOutcome R;
+        public List<int> Winners;
+        public int From, Turns;
+        public bool LeftScript;   // 途中で牌譜の流れから外れ、ボットで打った
+    }
+
     public class SimResult
     {
         public int Viewer;
@@ -122,6 +132,87 @@ namespace PaifuViewer
             return res;
         }
 
+        /// <summary>
+        /// 牌譜どおりに打った結果（操作の候補ごとに 1 回）。各家の実際の手牌と実際の牌山を使い、他家は牌譜の打牌・鳴き・和了をそのまま行う。
+        /// 視点の家は候補の操作のあと、牌譜と同じ手を打っている間は牌譜どおり、外れたらボットで打つ。
+        /// 牌譜の流れが成り立たなくなったら（牌譜の鳴きが起きない・カンなど）、以降は全員ボットで打つ。
+        /// 牌山データがない局、局終了の局面では null。
+        /// </summary>
+        public static async Task<List<ReplayOutcome>> ReplayAsync(Step s, List<object> k, int viewer, RoundData rd, List<Step> log, int index, CancellationToken ct, bool yieldEach)
+        {
+            if (!rd.HasWall || s.Ph == "e" || index < 0 || index >= log.Count) return null;
+            var setup = new SimSetup(s.Clone(), k, viewer)
+            {
+                RealHands = s.Pl.Select(p => { var h = new List<int>(p.H); if (p.Dw.HasValue) h.Add(p.Dw.Value); return h; }).ToArray(),
+                RealWall = rd.LW.Skip(s.Ld).ToList(),
+                RealRinshan = rd.RW.Skip(s.Rd).ToList(),
+                RealDora = rd.DoraInd ?? J.Ints(k[2]),
+                RealUra = rd.UraInd ?? (J.Ints(k[3]).Count > 0 ? J.Ints(k[3]) : null),
+                Script = BuildScript(log, index, k)
+            };
+            var o = new List<ReplayOutcome>();
+            foreach (var c in Candidates(setup))
+            {
+                ct.ThrowIfCancellationRequested();
+                var g = new SimGame(setup, new Random(1));
+                g.Play(c.Act);
+                o.Add(new ReplayOutcome { Label = c.Label, R = g.Result, Winners = g.Winners, From = g.From, Turns = (g.DrawCount + 3) / 4, LeftScript = g.LeftScript });
+                if (yieldEach) await Task.Delay(1, ct);
+            }
+            return o;
+        }
+
+        /// <summary>局面 index より後の牌譜を、ツモ・打牌・鳴き・カン・終局の手の列にする。</summary>
+        static List<ScriptEv> BuildScript(List<Step> log, int index, List<object> k)
+        {
+            var o = new List<ScriptEv>();
+            for (int j = index + 1; j < log.Count; j++)
+            {
+                var s = log[j];
+                string m = s.Msg;
+                if (s.Ph == "e") { o.Add(EndEvent(k)); break; }
+                int q = s.T;
+                if (m.Contains("暗槓") || m.Contains("加槓"))
+                {
+                    bool an = m.Contains("暗槓");
+                    var ml = s.Pl[q].Ml.Last(x => x.L == (an ? 'a' : 'k'));
+                    o.Add(new ScriptEv { Kind = EvKind.Kan, Q = q, L = an ? 'a' : 'k', Tile = ml.T[0] });
+                }
+                else if (m.Contains("チー") || m.Contains("ポン") || m.Contains("大明槓"))
+                {
+                    var ml = s.Pl[q].Ml.Last();
+                    o.Add(new ScriptEv
+                    {
+                        Kind = EvKind.Call, Q = q, From = log[j - 1].T, L = m.Contains("チー") ? 'c' : m.Contains("ポン") ? 'p' : 'm',
+                        Tile = ml.T[ml.Ci], Use = ml.T.Where((c, i) => i != ml.Ci).ToList()
+                    });
+                }
+                else if (m.Contains(" ツモ ") && s.Pl[q].Dw.HasValue) o.Add(new ScriptEv { Kind = EvKind.Draw, Q = q, Tile = s.Pl[q].Dw.Value });
+                else if (m.Contains(" 打 "))
+                {
+                    var r = s.Pl[q].Rv.Last();
+                    o.Add(new ScriptEv { Kind = EvKind.Discard, Q = q, Tile = r.C, Riichi = r.R });
+                }
+            }
+            return o;
+        }
+
+        /// <summary>牌譜の局の結果（和了した家・ツモかロンか）。流局なら和了者なし。</summary>
+        static ScriptEv EndEvent(List<object> k)
+        {
+            var e = new ScriptEv { Kind = EvKind.End };
+            var R = J.L(k[k.Count - 1]);
+            if (R.Count > 0 && J.S(R[0]) == "和了")
+                for (int j = 1; j + 1 < R.Count; j += 2)
+                {
+                    var h = J.L(R[j + 1]);
+                    int w = J.I(h[0]), f = J.I(h[1]);
+                    e.Winners.Add(w);
+                    e.Tsumo = w == f;
+                }
+            return e;
+        }
+
         static SimResult Prepare(Step s, List<object> k, int viewer, bool overallOnly, out SimSetup setup, out List<KeyValuePair<SimOutcome, Action<SimGame>>> jobs)
         {
             setup = new SimSetup(s.Clone(), k, viewer);
@@ -204,6 +295,19 @@ namespace PaifuViewer
         }
     }
 
+    enum EvKind { Draw, Discard, Call, Kan, End }
+
+    /// <summary>牌譜どおりに打つときの、牌譜の 1 手（ツモ・打牌・鳴き・カン・終局）。</summary>
+    class ScriptEv
+    {
+        public EvKind Kind;
+        public int Q = -1, From = -1, Tile;
+        public bool Riichi, Tsumo;
+        public char L;
+        public List<int> Use;
+        public List<int> Winners = new List<int>();
+    }
+
     /// <summary>試行に共通する情報（局の条件・開始局面・視点の家から見えない牌）。</summary>
     class SimSetup
     {
@@ -211,6 +315,12 @@ namespace PaifuViewer
         public int Viewer, RoundWind, Honba, Pot;
         public List<int> DoraInd;
         public List<int> Pool;   // 視点の家から見えない牌
+
+        // 牌譜どおりに打つとき：各家の実際の手牌・実際の牌山（これからのツモ順）・裏ドラ・この局面以降の牌譜
+        public List<int>[] RealHands;
+        public List<int> RealWall, RealUra, RealRinshan, RealDora;
+        public List<ScriptEv> Script;
+        public bool IsReplay { get { return Script != null; } }
 
         public SimSetup(Step s, List<object> k, int viewer)
         {
@@ -291,12 +401,22 @@ namespace PaifuViewer
         readonly int[][] RiRv = new int[4][];          // リーチ宣言時の各家の河の枚数（それ以降の打牌は現物）
         readonly int[] D = new int[4];
         readonly List<int> wall = new List<int>(), ura = new List<int>();
+        readonly List<int> dora;                       // めくれているドラ表示牌（牌譜どおりのカンで増える）
+        int ri, pendingDora;                           // 嶺上牌を何枚引いたか、打牌後にめくるカンドラの数
         int wi, wallLeft, pot, t, tile;
         bool rinNext, rs, afterCall;
         List<int> kk;
         Ph ph;
         Resp forced = Resp.Bot;
         List<int> forcedUse;
+
+        // 牌譜どおりに打つとき：牌譜の次の手（sp）、牌譜どおりに進んでいるか、視点の家が牌譜どおりか、直前の打牌が牌譜どおりか
+        int sp;
+        bool onScript, viewerOnScript, lastScripted;
+        public bool LeftScript { get { return st.IsReplay && !onScript; } }
+        public int DrawCount;   // 試行の中でツモった回数（何巡で終わったかの表示用）
+        ScriptEv Peek() { return st.Script != null && sp < st.Script.Count ? st.Script[sp] : null; }
+        void Leave() { onScript = false; }
 
         public SimOutcome Result = new SimOutcome { N = 1 };
 
@@ -317,6 +437,7 @@ namespace PaifuViewer
             v = st.Viewer;
             dealer = s.Dealer;
             pot = st.Pot;
+            dora = new List<int>(st.DoraInd);
             var pool = new List<int>(st.Pool);
             for (int i = pool.Count - 1; i > 0; i--)
             {
@@ -328,16 +449,20 @@ namespace PaifuViewer
             {
                 var PS = s.Pl[q];
                 int size = PS.H.Count + (PS.Dw.HasValue ? 1 : 0);
-                if (q == v)
+                if (q == v || st.IsReplay)
                 {
-                    H[q] = new List<int>(PS.H);
-                    if (PS.Dw.HasValue) H[q].Add(PS.Dw.Value);
+                    H[q] = st.IsReplay ? new List<int>(st.RealHands[q]) : new List<int>(PS.H);
+                    if (!st.IsReplay && PS.Dw.HasValue) H[q].Add(PS.Dw.Value);
                 }
                 else
                 {
                     H[q] = pool.Skip(pi).Take(size).ToList();
                     pi += size;
                 }
+            }
+            for (int q = 0; q < 4; q++)
+            {
+                var PS = s.Pl[q];
                 Rv[q] = PS.Rv.Select(r => r.C).ToList();
                 Ml[q] = new List<Meld>(PS.Ml);
                 Ri[q] = PS.Ri;
@@ -349,8 +474,22 @@ namespace PaifuViewer
                 }
             }
             wallLeft = s.Wall;
-            wall.AddRange(pool.Skip(pi).Take(wallLeft));
-            ura.AddRange(pool.Skip(pi + wall.Count).Take(5));
+            if (st.IsReplay)
+            {
+                wall.AddRange(st.RealWall.Take(wallLeft));
+                if (st.RealUra != null) ura.AddRange(st.RealUra);
+                onScript = viewerOnScript = true;
+                lastScripted = s.Ph == "c";   // 打牌への応答から始めるときは、その打牌は牌譜どおり
+            }
+            else
+            {
+                // 他家の手牌を、リーチ・巡目・副露に見合う進み具合に整えてから、残りを牌山にする
+                var rest = pool.Skip(pi).ToList();
+                for (int q = 0; q < 4; q++)
+                    if (q != v && (Ri[q] || Rv[q].Count > 0)) Shape(q, rest);
+                wall.AddRange(rest.Take(wallLeft));
+                ura.AddRange(rest.Skip(wall.Count).Take(5));
+            }
             while (ura.Count < 5) ura.Add(pool[rnd.Next(pool.Count)]);
             t = s.T;
             kk = s.Kk;
@@ -359,12 +498,105 @@ namespace PaifuViewer
             {
                 ph = Ph.Turn;
                 rs = s.Rs;
-                // 他家のツモ牌は手牌の最後の牌とみなす
+                // 他家のツモ牌は手牌の最後の牌とみなす（牌譜どおりのときは実際のツモ牌）
                 var PS = s.Pl[t];
                 afterCall = !PS.Dw.HasValue;
-                tile = afterCall ? 0 : t == v ? PS.Dw.Value : H[t].Last();
+                tile = afterCall ? 0 : t == v || st.IsReplay ? PS.Dw.Value : H[t].Last();
             }
             else { ph = Ph.Respond; tile = s.Pl[t].Rv.Last().C; }
+        }
+
+        // =====================================================================
+        // 他家の手牌を整える（見えない牌を無作為に配るだけだと、巡目が進んでも配牌直後のような手になるため）
+        // =====================================================================
+
+        /// <summary>
+        /// 目標の向聴数。リーチ中は 0（テンパイ）、それ以外は捨て牌の枚数と副露数から決める
+        /// （実際の牌譜の平均：3 枚 2.6、6 枚 1.7、9 枚以降 0.9 前後。副露 1 つにつき 0.35 進んでいるとみる）。
+        /// 平均がこの値になるよう、隣り合う整数から確率で選ぶ。
+        /// </summary>
+        int TargetShanten(int q)
+        {
+            if (Ri[q]) return 0;
+            int open = Ml[q].Count(m => m.L != 'a');
+            double e = Math.Max(0.9, 3.4 - 0.28 * Rv[q].Count) - 0.35 * open;
+            e = Math.Max(0.5, e);
+            int lo = (int)Math.Floor(e);
+            return lo + (rnd.NextDouble() < e - lo ? 1 : 0);
+        }
+
+        /// <summary>
+        /// 見えない牌（rest）と入れ替えながら、目標の向聴数まで手を進める。1 枚引いて最も向聴数の下がる牌を返す、を
+        /// 進んだときだけ採用する。リーチ中の家は、待ちが自分の河や宣言後に他家の切った牌（ロンしているはず）に含まれない形にする。
+        /// </summary>
+        void Shape(int q, List<int> rest)
+        {
+            var h = H[q];
+            int melds = Ml[q].Count, target = TargetShanten(q);
+            int sh = Shanten.Calc(h, melds);
+            for (int guard = 0; sh > target && guard < 80; guard++)
+            {
+                int k = rnd.Next(rest.Count);
+                int out_;
+                int ns = BestSwap(h, melds, rest[k], out out_);
+                if (ns >= sh) continue;
+                h.Add(rest[k]);
+                Tiles.Rm(h, out_);
+                rest[k] = out_;
+                sh = ns;
+            }
+            if (!Ri[q] || sh > 0) return;
+
+            var bad = new HashSet<int>(Rv[q].Select(Tiles.Ix));
+            if (RiRv[q] != null)
+                for (int o = 0; o < 4; o++)
+                    if (o != q) for (int j = RiRv[q][o]; j < Rv[o].Count; j++) bad.Add(Tiles.Ix(Rv[o][j]));
+            for (int guard = 0; guard < 60 && WaitsHit(h, melds, bad); guard++)
+            {
+                int k = rnd.Next(rest.Count);
+                int out_;
+                if (BestSwap(h, melds, rest[k], out out_) > 0) continue;
+                var h2 = new List<int>(h) { rest[k] };
+                Tiles.Rm(h2, out_);
+                if (WaitsHit(h2, melds, bad)) continue;
+                h.Add(rest[k]);
+                Tiles.Rm(h, out_);
+                rest[k] = out_;
+            }
+        }
+
+        /// <summary>手 h に牌 x を加えて 1 枚切ったときの最小の向聴数と、そのとき切る牌。</summary>
+        int BestSwap(List<int> h, int melds, int x, out int discard)
+        {
+            var a = Counts(h);
+            a[Tiles.Ix(x)]++;
+            int best = 99;
+            discard = x;
+            var cand = h.Concat(new[] { x }).Distinct().ToList();
+            foreach (int c in cand)
+            {
+                int i = Tiles.Ix(c);
+                a[i]--;
+                int s = Shanten.Calc(a, melds);
+                a[i]++;
+                if (s < best || s == best && rnd.Next(2) == 0) { best = s; discard = c; }
+            }
+            return best;
+        }
+
+        /// <summary>テンパイの手 h の待ちに、bad の種類が含まれるか。</summary>
+        static bool WaitsHit(List<int> h, int melds, HashSet<int> bad)
+        {
+            var a = Counts(h);
+            foreach (int j in bad)
+            {
+                if (a[j] >= 4) continue;
+                a[j]++;
+                bool win = Shanten.Calc(a, melds) < 0;
+                a[j]--;
+                if (win) return true;
+            }
+            return false;
         }
 
         // =====================================================================
@@ -393,8 +625,18 @@ namespace PaifuViewer
 
         void DoDraw()
         {
-            if (wi >= wall.Count) { Ryuukyoku(); return; }
-            tile = wall[wi++];
+            bool fromRin = rinNext && st.RealRinshan != null && ri < st.RealRinshan.Count;
+            if (!fromRin && wi >= wall.Count) { Ryuukyoku(); return; }
+            int next = fromRin ? st.RealRinshan[ri] : wall[wi];
+            if (onScript)
+            {
+                var ev = Peek();
+                if (ev != null && ev.Kind == EvKind.Draw && ev.Q == t && ev.Tile == next) sp++;
+                else Leave();
+            }
+            DrawCount++;
+            tile = next;
+            if (fromRin) ri++; else wi++;
             wallLeft--;
             rs = rinNext;
             rinNext = false;
@@ -407,6 +649,15 @@ namespace PaifuViewer
         void DoTurn()
         {
             int q = t;
+            // 牌譜どおりの家は牌譜の手（打牌・ツモ和了）をそのまま行う。カンなど扱えない手が来たら以降はボット
+            var ev = onScript && (q != v || viewerOnScript) ? Peek() : null;
+            if (ev != null)
+            {
+                if (ev.Kind == EvKind.End && ev.Tsumo && ev.Winners.Contains(q) && !afterCall && Tiles.Agari(H[q]) && Eval(q, H[q], tile, true) != null) { TsumoWin(q); return; }
+                if (ev.Kind == EvKind.Discard && ev.Q == q && H[q].Contains(ev.Tile)) { Discard(q, ev.Tile, ev.Riichi); return; }
+                if (ev.Kind == EvKind.Kan && ev.Q == q && SelfKan(q, ev)) { sp++; return; }
+                Leave();
+            }
             if (!afterCall && Tiles.Agari(H[q]) && Eval(q, H[q], tile, true) != null) { TsumoWin(q); return; }
             bool riichi;
             int c = ChooseDiscard(q, out riichi);
@@ -415,6 +666,24 @@ namespace PaifuViewer
 
         void Discard(int q, int c, bool riichi)
         {
+            // 牌譜と同じ打牌か。視点の家が違う牌を切ったら、以降の視点の家はボット（他家は牌譜どおりのまま）
+            lastScripted = false;
+            if (onScript)
+            {
+                var ev = Peek();
+                if (ev != null && ev.Kind == EvKind.Discard && ev.Q == q)
+                {
+                    sp++;
+                    lastScripted = ev.Tile == c && ev.Riichi == riichi;
+                    if (!lastScripted)
+                    {
+                        if (q == v) viewerOnScript = false;
+                        else Leave();
+                    }
+                }
+                else Leave();
+            }
+            for (; pendingDora > 0; pendingDora--) RevealDora();
             Tiles.Rm(H[q], c);
             Rv[q].Add(c);
             if (Ri[q]) Ipp[q] = false;
@@ -441,6 +710,12 @@ namespace PaifuViewer
             var fr = forced;
             forced = Resp.Bot;
 
+            // 牌譜どおりに進んでいて、この打牌も牌譜どおりなら、牌譜どおりの家のロン・鳴きは牌譜のとおりにする。
+            // 牌譜と違う打牌（視点の家が変えた打牌）には、どの家もロンはするが、牌譜どおりの家は鳴かない
+            var ev = onScript ? Peek() : null;
+            bool scr = onScript && lastScripted;
+            Func<int, bool> scripted = r => r != v || viewerOnScript;
+
             // ロン（複数人のロンはすべて和了とする）
             var winners = new List<int>();
             for (int k = 1; k < 4; k++)
@@ -448,44 +723,95 @@ namespace PaifuViewer
                 int r = (q + k) % 4;
                 var hand = new List<int>(H[r]) { c };
                 if (!Tiles.Agari(hand)) continue;
-                bool want = r == v && fr != Resp.Bot ? fr == Resp.Ron : true;
+                bool want = r == v && fr != Resp.Bot ? fr == Resp.Ron
+                    : scr && scripted(r) ? ev != null && ev.Kind == EvKind.End && !ev.Tsumo && ev.Winners.Contains(r)
+                    : true;
                 if (want && !Furiten(r) && Eval(r, hand, c, false) != null) winners.Add(r);
                 else Furi[r] = true;   // 見逃し（リーチ中は以後ずっとフリテン）
             }
             if (winners.Count > 0) { RonWin(winners, q, c); return; }
+            if (scr && ev != null && ev.Kind == EvKind.End && !ev.Tsumo && ev.Winners.Count > 0) Leave();   // 牌譜のロンが成り立たなかった（流局の終わりは除く）
 
             // 鳴き（ポンを優先し、チーは下家のみ）
             if (wallLeft > 0)
             {
-                if (fr == Resp.Pon || fr == Resp.Chi) { Call(v, q, fr == Resp.Pon ? 'p' : 'c', forcedUse, c); return; }
-                for (int k = 1; k < 4; k++)
+                if (fr == Resp.Pon || fr == Resp.Chi)
                 {
-                    int r = (q + k) % 4;
-                    if (r == v && fr == Resp.Pass) continue;
-                    var sm = H[r].Where(x => Tiles.Norm(x) == Tiles.Norm(c)).Take(2).ToList();
-                    if (sm.Count == 2 && WantCall(r, 'p', sm, c)) { Call(r, q, 'p', sm, c); return; }
+                    char fl = fr == Resp.Pon ? 'p' : 'c';
+                    bool same = onScript && ev != null && ev.Kind == EvKind.Call && ev.Q == v && ev.L == fl
+                        && ev.Use.Select(Tiles.Norm).OrderBy(x => x).SequenceEqual(forcedUse.Select(Tiles.Norm).OrderBy(x => x));
+                    if (same) sp++;
+                    else Leave();   // 牌譜と違う鳴きで手番がずれる
+                    Call(v, q, fl, forcedUse, c);
+                    return;
                 }
-                int n1 = (q + 1) % 4, nn = Tiles.Norm(c);
-                if (!(n1 == v && fr == Resp.Pass) && nn < 40)
+                if (onScript)
                 {
-                    int su = nn / 10, rk = nn % 10;
-                    List<int> bestUse = null;
-                    foreach (var ab in new[] { new[] { -2, -1 }, new[] { -1, 1 }, new[] { 1, 2 } })
+                    if (ev != null && ev.Kind == EvKind.Call && ev.From == q)
                     {
-                        int x = rk + ab[0], y = rk + ab[1];
-                        if (x < 1 || y > 9) continue;
-                        int? u = Tiles.Pk(H[n1], su * 10 + x), w = Tiles.Pk(H[n1], su * 10 + y);
-                        if (!u.HasValue || !w.HasValue) continue;
-                        var use = new List<int> { u.Value, w.Value };
-                        if (WantCall(n1, 'c', use, c)) { bestUse = use; break; }
+                        int r = ev.Q;
+                        bool ok = scripted(r) && !(r == v && fr == Resp.Pass) && Tiles.Norm(ev.Tile) == Tiles.Norm(c)
+                            && ev.Use.All(x => H[r].Any(y => Tiles.Norm(y) == Tiles.Norm(x)));
+                        if (ok) { sp++; Call(r, q, ev.L, ev.Use, c); return; }
+                        Leave();   // 牌譜の鳴きが起きない（視点の家が切る牌を変えた・スルーした）ので手番がずれる
                     }
-                    if (bestUse != null) { Call(n1, q, 'c', bestUse, c); return; }
+                    else
+                    {
+                        // 牌譜ではここで鳴きがない。牌譜から外れた視点の家だけボットで鳴くか決める
+                        if (!viewerOnScript && q != v && fr != Resp.Pass && BotCall(v, q, c)) { Leave(); return; }
+                        if (ev != null && ev.Kind == EvKind.Call) Leave();
+                    }
                 }
+                if (!onScript && BotCalls(q, c, fr)) return;
             }
 
             if (wallLeft <= 0) { Ryuukyoku(); return; }
             t = (q + 1) % 4;
             ph = Ph.Draw;
+        }
+
+        /// <summary>ボットの鳴き（ポンを優先し、チーは下家のみ）。鳴いたら true。</summary>
+        bool BotCalls(int q, int c, Resp fr)
+        {
+            for (int k = 1; k < 4; k++)
+            {
+                int r = (q + k) % 4;
+                if (r == v && fr == Resp.Pass) continue;
+                if (TryPon(r, q, c)) return true;
+            }
+            int n1 = (q + 1) % 4;
+            return !(n1 == v && fr == Resp.Pass) && TryChi(n1, q, c);
+        }
+
+        /// <summary>牌譜から外れた視点の家 r だけがボットとして鳴くか決める（牌譜どおりの他家は牌譜にない鳴きをしない）。</summary>
+        bool BotCall(int r, int q, int c)
+        {
+            return TryPon(r, q, c) || (q + 1) % 4 == r && TryChi(r, q, c);
+        }
+
+        bool TryPon(int r, int q, int c)
+        {
+            var sm = H[r].Where(x => Tiles.Norm(x) == Tiles.Norm(c)).Take(2).ToList();
+            if (sm.Count < 2 || !WantCall(r, 'p', sm, c)) return false;
+            Call(r, q, 'p', sm, c);
+            return true;
+        }
+
+        bool TryChi(int r, int q, int c)
+        {
+            int nn = Tiles.Norm(c);
+            if (nn >= 40) return false;
+            int su = nn / 10, rk = nn % 10;
+            foreach (var ab in new[] { new[] { -2, -1 }, new[] { -1, 1 }, new[] { 1, 2 } })
+            {
+                int x = rk + ab[0], y = rk + ab[1];
+                if (x < 1 || y > 9) continue;
+                int? u = Tiles.Pk(H[r], su * 10 + x), w = Tiles.Pk(H[r], su * 10 + y);
+                if (!u.HasValue || !w.HasValue) continue;
+                var use = new List<int> { u.Value, w.Value };
+                if (WantCall(r, 'c', use, c)) { Call(r, q, 'c', use, c); return true; }
+            }
+            return false;
         }
 
         void Call(int r, int from, char l, List<int> use, int c)
@@ -505,8 +831,51 @@ namespace PaifuViewer
                 if (us.All(x => x < nn) && nn % 10 - 3 >= 1) kk.Add(nn - 3);
             }
             t = r;
+            if (l == 'm')
+            {
+                // 大明槓（牌譜どおりのときのみ）：嶺上牌を引き、カンドラは打牌後にめくる
+                kk = null;
+                afterCall = false;
+                rinNext = true;
+                pendingDora++;
+                ph = Ph.Draw;
+                return;
+            }
             afterCall = true;
             ph = Ph.Turn;
+        }
+
+        /// <summary>牌譜どおりの暗槓・加槓。暗槓はすぐ、加槓は打牌後にカンドラをめくり、嶺上牌を引く。できなければ false。</summary>
+        bool SelfKan(int q, ScriptEv ev)
+        {
+            int n = Tiles.Norm(ev.Tile);
+            if (ev.L == 'a')
+            {
+                var u = H[q].Where(x => Tiles.Norm(x) == n).ToList();
+                if (u.Count < 4) return false;
+                foreach (int x in u) Tiles.Rm(H[q], x);
+                Ml[q].Add(new Meld { L = 'a', T = u, Ci = 0 });
+                RevealDora();
+            }
+            else
+            {
+                int m = Ml[q].FindIndex(x => x.L == 'p' && Tiles.Norm(x.T[0]) == n);
+                int? c = Tiles.Pk(H[q], n);
+                if (m < 0 || !c.HasValue) return false;
+                Tiles.Rm(H[q], c.Value);
+                Ml[q][m] = new Meld { L = 'k', T = new List<int>(Ml[q][m].T) { c.Value }, Ci = Ml[q][m].Ci };
+                pendingDora++;
+            }
+            for (int p = 0; p < 4; p++) Ipp[p] = false;
+            kk = null;
+            rinNext = true;
+            ph = Ph.Draw;
+            return true;
+        }
+
+        void RevealDora()
+        {
+            if (st.RealDora != null && dora.Count < st.RealDora.Count) dora.Add(st.RealDora[dora.Count]);
         }
 
         bool Yakuhai(int q, int c)
@@ -536,7 +905,7 @@ namespace PaifuViewer
         // 和了・流局
         // =====================================================================
 
-        public static ScoreResult EvalStatic(SimSetup st, int q, List<int> hand, List<Meld> ml, int winTile, bool tsumo, int wallLeft, bool rs, bool riichi, bool ipp, List<int> ura = null)
+        public static ScoreResult EvalStatic(SimSetup st, int q, List<int> hand, List<Meld> ml, int winTile, bool tsumo, int wallLeft, bool rs, bool riichi, bool ipp, List<int> ura = null, List<int> doraInd = null)
         {
             var w = new WinContext
             {
@@ -545,7 +914,7 @@ namespace PaifuViewer
                 Riichi = riichi, Ippatsu = ipp,
                 Haitei = tsumo && wallLeft <= 0 && !rs, Houtei = !tsumo && wallLeft <= 0,
                 Rinshan = tsumo && rs,
-                DoraInd = st.DoraInd,
+                DoraInd = doraInd ?? st.DoraInd,
                 UraInd = ura ?? new List<int>()
             };
             return Scoring.Evaluate(w);
@@ -553,7 +922,7 @@ namespace PaifuViewer
 
         ScoreResult Eval(int q, List<int> hand, int winTile, bool tsumo)
         {
-            return EvalStatic(st, q, hand, Ml[q], winTile, tsumo, wallLeft, rs, Ri[q], Ipp[q], ura.Take(st.DoraInd.Count).ToList());
+            return EvalStatic(st, q, hand, Ml[q], winTile, tsumo, wallLeft, rs, Ri[q], Ipp[q], ura.Take(dora.Count).ToList(), dora);
         }
 
         void TsumoWin(int q)
@@ -715,7 +1084,7 @@ namespace PaifuViewer
                 foreach (int c in Rv[p]) a[Tiles.Ix(c)]++;
                 foreach (var m in Ml[p]) foreach (int c in m.T) a[Tiles.Ix(c)]++;
             }
-            foreach (int c in st.DoraInd) a[Tiles.Ix(c)]++;
+            foreach (int c in dora) a[Tiles.Ix(c)]++;
             return a;
         }
 
@@ -891,7 +1260,7 @@ namespace PaifuViewer
                 a[j]--;
                 if (!win) continue;
                 var w = new List<int>(hand) { Tiles.Cd(j) };
-                var r = EvalStatic(st, q, w, Ml[q], Tiles.Cd(j), false, wallLeft, false, riichi, false);
+                var r = EvalStatic(st, q, w, Ml[q], Tiles.Cd(j), false, wallLeft, false, riichi, false, null, dora);
                 int left = 4 - vis[j];
                 n += left;
                 if (r != null) sum += (long)left * r.Base * (oya ? 6 : 4);
@@ -903,7 +1272,7 @@ namespace PaifuViewer
         double HanEstimate(int q, int[] a, Plan plan)
         {
             double han = 0;
-            foreach (int d in st.DoraInd)
+            foreach (int d in dora)
             {
                 int di = Scoring.DoraOf(d);
                 han += a[di] + Ml[q].Sum(m => m.T.Count(c => Tiles.Ix(c) == di));
@@ -956,7 +1325,7 @@ namespace PaifuViewer
                 for (int d = -2; d <= 2; d++)
                     if (d != 0 && r + d >= 0 && r + d <= 8) v0 += a[i + d] * (Math.Abs(d) == 1 ? 4 : 2);
             }
-            if (st.DoraInd.Any(x => Scoring.DoraOf(x) == i)) v0 += 6;
+            if (dora.Any(x => Scoring.DoraOf(x) == i)) v0 += 6;
             if (c > 50) v0 += 6;
             return v0;
         }
